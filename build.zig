@@ -15,6 +15,18 @@ const RocTarget = enum {
     arm64musl,
     arm64v1musl,
 
+    // wasm targets
+    wasm32,
+
+    /// The wasm host is a different root source file: no POSIX stdio, no
+    /// `main(argc, argv)`, and effects are delegated to the JS embedder.
+    fn rootSourceFile(self: RocTarget) []const u8 {
+        return switch (self) {
+            .wasm32 => "src/host_wasm.zig",
+            else => "src/host.zig",
+        };
+    }
+
     fn toZigTarget(self: RocTarget) std.Target.Query {
         return switch (self) {
             .x64mac => .{ .cpu_arch = .x86_64, .os_tag = .macos },
@@ -35,6 +47,7 @@ const RocTarget = enum {
                 .os_tag = .linux,
                 .abi = .musl,
             },
+            .wasm32 => .{ .cpu_arch = .wasm32, .os_tag = .freestanding },
         };
     }
 
@@ -48,6 +61,7 @@ const RocTarget = enum {
             .arm64win => "arm64win",
             .arm64musl => "arm64musl",
             .arm64v1musl => "arm64v1musl",
+            .wasm32 => "wasm32",
         };
     }
 
@@ -85,6 +99,7 @@ const all_targets = [_]RocTarget{
     .arm64win,
     .arm64musl,
     .arm64v1musl,
+    .wasm32,
 };
 
 pub fn build(b: *std.Build) void {
@@ -111,7 +126,7 @@ pub fn build(b: *std.Build) void {
     // Build for each Roc target
     for (all_targets) |roc_target| {
         const target = b.resolveTargetQuery(roc_target.toZigTarget());
-        const host_lib = buildHostLib(b, target, optimize);
+        const host_lib = buildHostLib(b, roc_target, target, optimize);
 
         // Copy to platform/targets/{target}/libhost.a (or host.lib for Windows)
         copy_all.addCopyFileToSource(
@@ -129,6 +144,17 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    // Wasm step: build only the wasm32 host library (used by the Cloudflare
+    // Worker build, where the rest of the targets are irrelevant).
+    const wasm_step = b.step("wasm", "Build host library for wasm32 only");
+    const wasm_lib = buildHostLib(b, .wasm32, b.resolveTargetQuery(RocTarget.wasm32.toZigTarget()), optimize);
+    const copy_wasm = b.addUpdateSourceFiles();
+    copy_wasm.addCopyFileToSource(
+        wasm_lib.getEmittedBin(),
+        b.pathJoin(&.{ "platform", "targets", "wasm32", "libhost.a" }),
+    );
+    wasm_step.dependOn(&copy_wasm.step);
+
     // Native step: build only for the current platform (with full cleanup first)
     const native_step = b.step("native", "Build host library for native platform only");
     native_step.dependOn(cleanup_step);
@@ -141,7 +167,7 @@ pub fn build(b: *std.Build) void {
         return;
     };
 
-    const native_lib = buildHostLib(b, b.resolveTargetQuery(native_roc_target.toZigTarget()), optimize);
+    const native_lib = buildHostLib(b, native_roc_target, b.resolveTargetQuery(native_roc_target.toZigTarget()), optimize);
     b.installArtifact(native_lib);
 
     const copy_native = b.addUpdateSourceFiles();
@@ -151,7 +177,7 @@ pub fn build(b: *std.Build) void {
     );
 
     if (native_roc_target.baselineMuslTarget()) |baseline_roc_target| {
-        const baseline_lib = buildHostLib(b, b.resolveTargetQuery(baseline_roc_target.toZigTarget()), optimize);
+        const baseline_lib = buildHostLib(b, baseline_roc_target, b.resolveTargetQuery(baseline_roc_target.toZigTarget()), optimize);
         copy_native.addCopyFileToSource(
             baseline_lib.getEmittedBin(),
             b.pathJoin(&.{ "platform", "targets", baseline_roc_target.targetDir(), baseline_roc_target.libFilename() }),
@@ -275,18 +301,22 @@ const CleanupStep = struct {
 
 fn buildHostLib(
     b: *std.Build,
+    roc_target: RocTarget,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step.Compile {
+    const is_wasm = roc_target == .wasm32;
     const host_lib = b.addLibrary(.{
         .name = "host",
         .linkage = .static,
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/host.zig"),
+            .root_source_file = b.path(roc_target.rootSourceFile()),
             .target = target,
             .optimize = optimize,
             .strip = optimize != .Debug,
-            .pic = true,
+            // wasm has no position-dependent code to speak of, and requesting
+            // PIC for wasm32-freestanding is rejected by the compiler.
+            .pic = if (is_wasm) null else true,
         }),
     });
     // Force bundle compiler-rt to resolve runtime symbols like __main
