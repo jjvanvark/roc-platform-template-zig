@@ -124,6 +124,66 @@
           ]
         }
       ]
+    },
+    {
+      "path": "examples/r2.roc",
+      "cases": [
+        {
+          "name": "get-missing-object",
+          "args": [
+            "https://example.com/thing"
+          ],
+          "exit_code": 1,
+          "stdout_contains": [
+            "not found"
+          ]
+        },
+        {
+          "name": "put-then-get-in-one-process",
+          "args": [
+            "https://example.com/thing",
+            "PUT",
+            "the payload"
+          ],
+          "stdout_contains": [
+            "stored"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "examples/queue.roc",
+      "cases": [
+        {
+          "name": "send",
+          "args": [
+            "https://example.com/enqueue",
+            "POST",
+            "resize job 7"
+          ],
+          "stdout_contains": [
+            "queued"
+          ],
+          "stderr_contains": [
+            "[queue JOBS] resize job 7"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "examples/d1.roc",
+      "cases": [
+        {
+          "name": "unavailable-natively",
+          "args": [
+            "https://example.com/page"
+          ],
+          "exit_code": 1,
+          "stdout_contains": [
+            "D1 is not available in the native host"
+          ]
+        }
+      ]
     }
   ]
 }

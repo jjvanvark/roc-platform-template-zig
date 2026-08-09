@@ -96,20 +96,25 @@ fn hostedStderrLine(str: abi.RocStr) callconv(.c) abi.HostStderr_lineResult {
     return result;
 }
 
-/// Format "no KV binding named 'X'" into a scratch buffer.
+/// Format a "no X binding named 'Y'" message into a scratch buffer.
 ///
-/// The message names the binding because getting it wrong is the most likely
-/// mistake, and the wrangler config is the only place it can be fixed.
+/// The message names both the kind and the binding, because a wrong binding
+/// name is the most likely mistake and the wrangler config is the only place
+/// it can be fixed.
 var binding_err_buf: [256]u8 = undefined;
-fn missingBindingMessage(name: []const u8) []const u8 {
+fn missingBindingMessage(comptime kind: []const u8, name: []const u8) []const u8 {
     return std.fmt.bufPrint(
         &binding_err_buf,
-        "no KV binding named '{s}' — add it to kv_namespaces in your wrangler config",
+        "no " ++ kind ++ " binding named '{s}' — check your wrangler config",
         .{name},
-    ) catch "no KV binding with that name in the wrangler config";
+    ) catch "no " ++ kind ++ " binding with that name in the wrangler config";
 }
 
 /// Look up a binding by name on the current request's Env.
+///
+/// workers-zig's `env.kv()` and friends take the name as a comptime parameter,
+/// which Roc cannot provide: binding names arrive as runtime strings. The
+/// comptime-ness is only for ergonomics, so this drops to the FFI call under it.
 fn lookupBinding(comptime T: type, name: []const u8) !T {
     const env = g_env orelse return error.NoRequestInFlight;
     const handle = workers.js.env_get_binding(env.handle, name.ptr, @intCast(name.len));
@@ -117,58 +122,38 @@ fn lookupBinding(comptime T: type, name: []const u8) !T {
     return T.init(handle, env.allocator);
 }
 
-fn kvGetErr(message: []const u8, roc_host: *abi.RocHost) abi.HostKv_getResult {
-    var err = std.mem.zeroes(abi.KvErrOrKvNotFound);
-    payload.set(&err, "kv_err", abi.RocStr.fromSlice(message, roc_host));
-    err.tag = .KvErr;
-
-    var result = std.mem.zeroes(abi.HostKv_getResult);
-    payload.set(&result, "err", err);
-    result.tag = .Err;
-    return result;
+/// Turn a binding lookup failure into a message.
+fn bindingErrorMessage(comptime kind: []const u8, err: anyerror, name: []const u8) []const u8 {
+    return switch (err) {
+        error.NoRequestInFlight => kind ++ " is only available while handling a request",
+        else => missingBindingMessage(kind, name),
+    };
 }
 
 /// Hosted function: Host.kv_get!
 fn hostedKvGet(binding: abi.RocStr, key: abi.RocStr) callconv(.c) abi.HostKv_getResult {
+    const Result = abi.HostKv_getResult;
     const roc_host = initHost();
     var owned_binding = binding;
     var owned_key = key;
     defer owned_binding.decref(roc_host);
     defer owned_key.decref(roc_host);
 
-    const kv = lookupBinding(workers.KvNamespace, owned_binding.asSlice()) catch |e| switch (e) {
-        error.NoRequestInFlight => return kvGetErr("KV is only available while handling a request", roc_host),
-        error.BindingNotFound => return kvGetErr(missingBindingMessage(owned_binding.asSlice()), roc_host),
+    const kv = lookupBinding(workers.KvNamespace, owned_binding.asSlice()) catch |e| {
+        return payload.errUnionStr(Result, abi.KvErrOrKvNotFound, "kv_err", .KvErr, bindingErrorMessage("KV", e, owned_binding.asSlice()), roc_host);
     };
 
     const value = kv.getText(owned_key.asSlice()) catch |e| {
-        return kvGetErr(@errorName(e), roc_host);
+        return payload.errUnionStr(Result, abi.KvErrOrKvNotFound, "kv_err", .KvErr, @errorName(e), roc_host);
     };
 
-    if (value) |v| {
-        var result = std.mem.zeroes(abi.HostKv_getResult);
-        payload.set(&result, "ok", abi.RocStr.fromSlice(v, roc_host));
-        result.tag = .Ok;
-        return result;
-    }
-
-    var not_found = std.mem.zeroes(abi.KvErrOrKvNotFound);
-    not_found.tag = .KvNotFound;
-    var result = std.mem.zeroes(abi.HostKv_getResult);
-    payload.set(&result, "err", not_found);
-    result.tag = .Err;
-    return result;
-}
-
-fn kvPutErr(message: []const u8, roc_host: *abi.RocHost) abi.HostKv_putResult {
-    var result = std.mem.zeroes(abi.HostKv_putResult);
-    payload.set(&result, "err", abi.RocStr.fromSlice(message, roc_host));
-    result.tag = .Err;
-    return result;
+    if (value) |v| return payload.okStr(Result, v, roc_host);
+    return payload.errUnionEmpty(Result, abi.KvErrOrKvNotFound, .KvNotFound);
 }
 
 /// Hosted function: Host.kv_put!
 fn hostedKvPut(binding: abi.RocStr, key: abi.RocStr, value: abi.RocStr) callconv(.c) abi.HostKv_putResult {
+    const Result = abi.HostKv_putResult;
     const roc_host = initHost();
     var owned_binding = binding;
     var owned_key = key;
@@ -177,16 +162,146 @@ fn hostedKvPut(binding: abi.RocStr, key: abi.RocStr, value: abi.RocStr) callconv
     defer owned_key.decref(roc_host);
     defer owned_value.decref(roc_host);
 
-    const kv = lookupBinding(workers.KvNamespace, owned_binding.asSlice()) catch |e| switch (e) {
-        error.NoRequestInFlight => return kvPutErr("KV is only available while handling a request", roc_host),
-        error.BindingNotFound => return kvPutErr(missingBindingMessage(owned_binding.asSlice()), roc_host),
+    const kv = lookupBinding(workers.KvNamespace, owned_binding.asSlice()) catch |e| {
+        return payload.errStr(Result, bindingErrorMessage("KV", e, owned_binding.asSlice()), roc_host);
     };
 
     kv.put(owned_key.asSlice(), owned_value.asSlice());
+    return payload.okEmpty(Result);
+}
 
-    var result = std.mem.zeroes(abi.HostKv_putResult);
-    result.tag = .Ok;
-    return result;
+/// Hosted function: Host.r2_get!
+fn hostedR2Get(binding: abi.RocStr, key: abi.RocStr) callconv(.c) abi.HostR2_getResult {
+    const Result = abi.HostR2_getResult;
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_key = key;
+    defer owned_binding.decref(roc_host);
+    defer owned_key.decref(roc_host);
+
+    const bucket = lookupBinding(workers.R2Bucket, owned_binding.asSlice()) catch |e| {
+        return payload.errUnionStr(Result, abi.R2ErrOrR2NotFound, "r2err", .R2Err, bindingErrorMessage("R2", e, owned_binding.asSlice()), roc_host);
+    };
+
+    const object = bucket.get(owned_key.asSlice()) catch |e| {
+        return payload.errUnionStr(Result, abi.R2ErrOrR2NotFound, "r2err", .R2Err, @errorName(e), roc_host);
+    };
+
+    if (object) |o| return payload.okStr(Result, o.body, roc_host);
+    return payload.errUnionEmpty(Result, abi.R2ErrOrR2NotFound, .R2NotFound);
+}
+
+/// Hosted function: Host.r2_put!
+fn hostedR2Put(binding: abi.RocStr, key: abi.RocStr, body: abi.RocStr) callconv(.c) abi.HostR2_putResult {
+    const Result = abi.HostR2_putResult;
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_key = key;
+    var owned_body = body;
+    defer owned_binding.decref(roc_host);
+    defer owned_key.decref(roc_host);
+    defer owned_body.decref(roc_host);
+
+    const bucket = lookupBinding(workers.R2Bucket, owned_binding.asSlice()) catch |e| {
+        return payload.errStr(Result, bindingErrorMessage("R2", e, owned_binding.asSlice()), roc_host);
+    };
+
+    _ = bucket.put(owned_key.asSlice(), owned_body.asSlice(), .{}) catch |e| {
+        return payload.errStr(Result, @errorName(e), roc_host);
+    };
+    return payload.okEmpty(Result);
+}
+
+/// Hosted function: Host.r2_delete!
+fn hostedR2Delete(binding: abi.RocStr, key: abi.RocStr) callconv(.c) abi.HostR2_deleteResult {
+    const Result = abi.HostR2_deleteResult;
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_key = key;
+    defer owned_binding.decref(roc_host);
+    defer owned_key.decref(roc_host);
+
+    const bucket = lookupBinding(workers.R2Bucket, owned_binding.asSlice()) catch |e| {
+        return payload.errStr(Result, bindingErrorMessage("R2", e, owned_binding.asSlice()), roc_host);
+    };
+
+    bucket.delete(owned_key.asSlice());
+    return payload.okEmpty(Result);
+}
+
+/// Hosted function: Host.d1_query!
+fn hostedD1Query(binding: abi.RocStr, sql: abi.RocStr, params: abi.RocStr) callconv(.c) abi.HostD1_queryResult {
+    const Result = abi.HostD1_queryResult;
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_sql = sql;
+    var owned_params = params;
+    defer owned_binding.decref(roc_host);
+    defer owned_sql.decref(roc_host);
+    defer owned_params.decref(roc_host);
+
+    const db = lookupBinding(workers.D1Database, owned_binding.asSlice()) catch |e| {
+        return payload.errStr(Result, bindingErrorMessage("D1", e, owned_binding.asSlice()), roc_host);
+    };
+
+    const result = db.queryAll(owned_sql.asSlice(), owned_params.asSlice()) catch |e| {
+        return payload.errStr(Result, @errorName(e), roc_host);
+    };
+    if (!result.success) return payload.errStr(Result, "the query failed", roc_host);
+
+    return payload.okStr(Result, result.json, roc_host);
+}
+
+/// Hosted function: Host.d1_execute!
+fn hostedD1Execute(binding: abi.RocStr, sql: abi.RocStr, params: abi.RocStr) callconv(.c) abi.HostD1_executeResult {
+    const Result = abi.HostD1_executeResult;
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_sql = sql;
+    var owned_params = params;
+    defer owned_binding.decref(roc_host);
+    defer owned_sql.decref(roc_host);
+    defer owned_params.decref(roc_host);
+
+    const db = lookupBinding(workers.D1Database, owned_binding.asSlice()) catch |e| {
+        return payload.errStr(Result, bindingErrorMessage("D1", e, owned_binding.asSlice()), roc_host);
+    };
+
+    const result = db.queryRun(owned_sql.asSlice(), owned_params.asSlice()) catch |e| {
+        return payload.errStr(Result, @errorName(e), roc_host);
+    };
+    if (!result.success) return payload.errStr(Result, "the statement failed", roc_host);
+
+    return payload.ok(Result, result.rows_written);
+}
+
+/// Hosted function: Host.queue_send!
+///
+/// The shim JSON-parses whatever it is handed before calling `queue.send`, so
+/// a plain text body has to be encoded as a JSON string first — otherwise
+/// Cloudflare rejects it with "Content Type \"text\" requires a value of type
+/// string".
+fn hostedQueueSend(binding: abi.RocStr, body: abi.RocStr) callconv(.c) abi.HostQueue_sendResult {
+    const Result = abi.HostQueue_sendResult;
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_body = body;
+    defer owned_binding.decref(roc_host);
+    defer owned_body.decref(roc_host);
+
+    const queue = lookupBinding(workers.Queue, owned_binding.asSlice()) catch |e| {
+        return payload.errStr(Result, bindingErrorMessage("Queue", e, owned_binding.asSlice()), roc_host);
+    };
+
+    const env = g_env.?;
+    var encoded: std.Io.Writer.Allocating = .init(env.allocator);
+    defer encoded.deinit();
+    std.json.Stringify.encodeJsonString(owned_body.asSlice(), .{}, &encoded.writer) catch {
+        return payload.errStr(Result, "could not encode the message body", roc_host);
+    };
+
+    queue.send(encoded.written(), .{ .content_type = .text });
+    return payload.okEmpty(Result);
 }
 
 // =============================================================================
@@ -324,6 +439,12 @@ comptime {
         @export(&hostedStdoutLine, .{ .name = "roc_stdout_line", .visibility = .hidden });
         @export(&hostedKvGet, .{ .name = "roc_kv_get", .visibility = .hidden });
         @export(&hostedKvPut, .{ .name = "roc_kv_put", .visibility = .hidden });
+        @export(&hostedR2Get, .{ .name = "roc_r2_get", .visibility = .hidden });
+        @export(&hostedR2Put, .{ .name = "roc_r2_put", .visibility = .hidden });
+        @export(&hostedR2Delete, .{ .name = "roc_r2_delete", .visibility = .hidden });
+        @export(&hostedD1Query, .{ .name = "roc_d1_query", .visibility = .hidden });
+        @export(&hostedD1Execute, .{ .name = "roc_d1_execute", .visibility = .hidden });
+        @export(&hostedQueueSend, .{ .name = "roc_queue_send", .visibility = .hidden });
 
         @export(&hostAlloc, .{ .name = "roc_alloc", .visibility = .hidden });
         @export(&hostDealloc, .{ .name = "roc_dealloc", .visibility = .hidden });

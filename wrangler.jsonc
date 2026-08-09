@@ -13,6 +13,27 @@
       "id": "roc_cloudflare_counter"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "roc-cloudflare-bucket"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "roc-cloudflare-db",
+      "database_id": "roc_cloudflare_db"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "JOBS",
+        "queue": "roc-cloudflare-jobs"
+      }
+    ]
+  },
   "rules": [
     {
       "type": "CompiledWasm",

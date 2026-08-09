@@ -57,7 +57,42 @@ The first argument is the **binding name** from `kv_namespaces` in your wrangler
 
 KV is eventually consistent: a read straight after a write can still return the old value. Don't reach for it where you need read-after-write.
 
-Natively there is no Workers KV, so the host keeps an in-memory store scoped by binding name that lives for one process. It exists so KV-using apps run under `zig build test`; durability and consistency behaviour have to be checked against the real thing.
+### R2, D1 and Queues
+
+```roc
+import pf.R2
+import pf.D1
+import pf.Queue
+
+R2.get!("BUCKET", key)                       # Ok(body) | Err(R2NotFound) | Err(R2Err(msg))
+R2.put!("BUCKET", key, body)
+R2.delete!("BUCKET", key)
+
+D1.query!("DB", "SELECT name FROM users WHERE age > ?", "[21]")   # Ok(rows_as_json)
+D1.execute!("DB", "INSERT INTO users (name) VALUES (?)", "[\"alice\"]")  # Ok(rows_written)
+
+Queue.send!("JOBS", body)
+```
+
+Each takes its binding name first, the same as `Kv`.
+
+Some rough edges worth knowing:
+
+- **R2 bodies are `Str`**, so only UTF-8 objects work. Binary objects need a `List(U8)` API that does not exist yet.
+- **D1 has no row type.** Rows come back as a JSON array string and parameters go in as a JSON array string; use `"[]"` when there are none.
+- **Queues are producer-only.** Consuming needs a `queue` handler alongside `fetch`, which the platform does not expose yet.
+
+### Running bindings natively
+
+None of these exist outside Workers, so the native host approximates them well enough to run examples under `zig build test`:
+
+| Binding | Native behaviour |
+|---------|------------------|
+| KV, R2 | In-memory store scoped by binding name, for the lifetime of one process |
+| D1 | Reports that it is unavailable, rather than pretending |
+| Queues | Writes the message to stderr |
+
+Durability, eventual consistency and real query behaviour have to be checked against the real thing.
 
 ## Running
 
@@ -101,7 +136,7 @@ zig build docs
 
 ```
 $ zig build test
-All test stages passed (check: 6, build: 6, run: 9)
+All test stages passed (check: 9, build: 9, run: 13)
 ```
 
 Run the spec directly against another examples directory or only selected stages:
