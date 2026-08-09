@@ -1,9 +1,9 @@
-app [main!] { pf: platform "https://github.com/lukewilliamboswell/roc-platform-template-zig/releases/download/1.0.0/AnZoxzoGPtSGQ15EQh6pBeeaHJ7aizP9MQhK81dES3Uq.tar.zst" }
+app [main!] { pf: platform "../platform/main.roc" }
 
-import pf.Stdout
+import pf.Request exposing [Request]
+import pf.Response exposing [Response]
 
-main! : List(Str) => Try({}, [Exit(I32), StdoutErr(Str), ..])
-main! = |_args| {
-    Stdout.line!("Hello, World!")?
-    Ok({})
+main! : Request => Response
+main! = |_request| {
+    { status: 200, body: "Hello, World!\n" }
 }

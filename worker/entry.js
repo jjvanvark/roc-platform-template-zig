@@ -1,9 +1,8 @@
 // Cloudflare Worker entrypoint.
 //
-// Phase 2 glue, written by hand on purpose: instantiate the Roc-built wasm
-// module, hand it the request URL, and turn whatever the app logs into the
-// response body. This gets replaced once real Request/Response marshalling
-// lands.
+// Phase 3 glue, still written by hand: instantiate the Roc-built wasm module,
+// marshal the Request into it, and turn the Roc Response back into a real
+// Response. This gets replaced by workers-zig's own glue.
 import wasmModule from "./roc.wasm";
 
 const encoder = new TextEncoder();
@@ -14,7 +13,6 @@ export default {
     // A fresh instance per request: Roc's allocator state lives in the wasm
     // instance's linear memory, so reusing one across requests would leak and
     // let requests observe each other's data.
-    const lines = [];
     let memory;
 
     const instance = await WebAssembly.instantiate(wasmModule, {
@@ -22,27 +20,44 @@ export default {
         host_log(stream, ptr, len) {
           const text = decoder.decode(new Uint8Array(memory.buffer, ptr, len));
           if (stream === 2) console.error(text);
-          else lines.push(text);
+          else console.log(text);
         },
       },
     });
 
-    const exports = instance.exports;
-    memory = exports.memory;
+    const w = instance.exports;
+    memory = w.memory;
 
+    const method = encoder.encode(request.method);
     const url = encoder.encode(request.url);
-    const capacity = exports.roc_url_buffer_len();
-    if (url.length > capacity) {
-      return new Response("Request URL too long\n", { status: 414 });
-    }
-    new Uint8Array(memory.buffer, exports.roc_url_buffer(), capacity).set(url);
+    const body = new Uint8Array(await request.arrayBuffer());
 
-    const exitCode = exports.roc_entry(url.length);
-    if (exitCode !== 0) {
-      return new Response(`Roc app exited with code ${exitCode}\n`, { status: 500 });
+    const total = method.length + url.length + body.length;
+    const ptr = w.roc_request_alloc(total);
+    if (ptr === 0) {
+      return new Response("Out of memory building the request\n", { status: 500 });
     }
 
-    return new Response(lines.join("\n") + "\n", {
+    // The pointer is only valid until the next allocation, and roc_request_alloc
+    // is the last one before roc_handle, so this view is safe to fill in place.
+    const buf = new Uint8Array(memory.buffer, ptr, total);
+    buf.set(method, 0);
+    buf.set(url, method.length);
+    buf.set(body, method.length + url.length);
+
+    if (w.roc_handle(method.length, url.length, body.length) !== 0) {
+      return new Response("Roc host rejected the request\n", { status: 500 });
+    }
+
+    const status = w.roc_response_status();
+    const bodyPtr = w.roc_response_body_ptr();
+    const bodyLen = w.roc_response_body_len();
+    // Decode before freeing: the bytes live in Roc-owned memory.
+    const responseBody = decoder.decode(new Uint8Array(memory.buffer, bodyPtr, bodyLen));
+    w.roc_response_free();
+
+    return new Response(responseBody, {
+      status,
       headers: { "content-type": "text/plain; charset=utf-8" },
     });
   },

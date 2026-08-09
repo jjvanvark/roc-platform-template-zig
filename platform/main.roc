@@ -1,11 +1,10 @@
 platform ""
-    requires {} { main! : List(Str) => Try({}, [Exit(I32), ..]) }
-    exposes [Stdout, Stderr, Stdin]
+    requires {} { main! : Request => Response }
+    exposes [Request, Response, Stdout, Stderr]
     packages {}
     provides { "roc_main": main_for_host! }
     hosted {
         "roc_stderr_line": Host.stderr_line!,
-        "roc_stdin_line": Host.stdin_line!,
         "roc_stdout_line": Host.stdout_line!,
     }
     targets: {
@@ -21,20 +20,11 @@ platform ""
         wasm32: { inputs: ["libhost.a", app] },
     }
 
+import Request exposing [Request]
+import Response exposing [Response]
 import Stdout
 import Stderr
-import Stdin
 import Host
 
-main_for_host! : List(Str) => I32
-main_for_host! = |args| {
-    result = main!(args)
-    match result {
-        Ok({}) => 0
-        Err(Exit(code)) => code
-        Err(other) => {
-            _ = Stderr.line!("ERROR: ${Str.inspect(other)}")
-            -1
-        }
-    }
-}
+main_for_host! : Request => Response
+main_for_host! = |request| main!(request)

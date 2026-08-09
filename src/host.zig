@@ -1,4 +1,8 @@
-///! Platform host that implements effectful functions for stdout, stderr, and stdin.
+///! Native platform host.
+///!
+///! There is no HTTP server here: it synthesizes a Request from argv and
+///! prints the Response, so the platform can be exercised locally without
+///! wrangler in the loop.
 const std = @import("std");
 const builtin = @import("builtin");
 const abi = @import("roc_platform_abi.zig");
@@ -12,12 +16,11 @@ pub const std_options: std.Options = .{
 /// `HostEnv` via `@fieldParentPtr`.
 const HostEnv = struct {
     gpa: std.heap.DebugAllocator(.{}),
-    stdin_reader: std.Io.File.Reader,
     roc_env: abi.RocEnv,
 };
 
 /// Roc entrypoint exported by the app under `provides { "roc_main": main_for_host! }`.
-extern fn roc_main(args: abi.RocList(abi.RocStr)) callconv(.c) i32;
+extern fn roc_main(request: abi.Request) callconv(.c) abi.Response;
 
 /// Private RocHost used by host helpers and exported runtime symbols.
 var g_roc_host: ?*abi.RocHost = null;
@@ -57,20 +60,6 @@ fn stderrLineErr(err: anyerror, roc_host: *abi.RocHost) abi.HostStderr_lineResul
     return result;
 }
 
-fn stdinLineOk(line: abi.RocStr) abi.HostStdin_lineResult {
-    var result = std.mem.zeroes(abi.HostStdin_lineResult);
-    result.payload = .{ .ok = line };
-    result.tag = .Ok;
-    return result;
-}
-
-fn stdinLineErr(err: anyerror, roc_host: *abi.RocHost) abi.HostStdin_lineResult {
-    var result = std.mem.zeroes(abi.HostStdin_lineResult);
-    result.payload = .{ .err = abi.RocStr.fromSlice(@errorName(err), roc_host) };
-    result.tag = .Err;
-    return result;
-}
-
 fn stdoutLineOk() abi.HostStdout_lineResult {
     var result = std.mem.zeroes(abi.HostStdout_lineResult);
     result.tag = .Ok;
@@ -96,41 +85,6 @@ fn hostedStderrLine(str: abi.RocStr) callconv(.c) abi.HostStderr_lineResult {
     stderr.writeStreamingAll(io, message) catch |err| return stderrLineErr(err, roc_host);
     stderr.writeStreamingAll(io, "\n") catch |err| return stderrLineErr(err, roc_host);
     return stderrLineOk();
-}
-
-/// Hosted function: Host.stdin_line!
-fn hostedStdinLine() callconv(.c) abi.HostStdin_lineResult {
-    const roc_host = g_roc_host.?;
-    const roc_env: *abi.RocEnv = @ptrCast(@alignCast(roc_host.env));
-    const host: *HostEnv = @fieldParentPtr("roc_env", roc_env);
-    var reader = &host.stdin_reader.interface;
-
-    var line = while (true) {
-        const maybe_line = reader.takeDelimiter('\n') catch |err| switch (err) {
-            error.ReadFailed => return stdinLineErr(err, roc_host),
-            error.StreamTooLong => {
-                // Skip the overlong line so the next call starts fresh.
-                _ = reader.discardDelimiterInclusive('\n') catch |discard_err| switch (discard_err) {
-                    error.ReadFailed => return stdinLineErr(discard_err, roc_host),
-                    error.EndOfStream => return stdinLineOk(abi.RocStr.empty()),
-                };
-                continue;
-            },
-        } orelse break &.{};
-
-        break maybe_line;
-    };
-
-    // Trim trailing \r for Windows line endings
-    if (line.len > 0 and line[line.len - 1] == '\r') {
-        line = line[0 .. line.len - 1];
-    }
-
-    if (line.len == 0) {
-        return stdinLineOk(abi.RocStr.empty());
-    }
-
-    return stdinLineOk(abi.RocStr.fromSlice(line[0..line.len], roc_host));
 }
 
 /// Hosted function: Host.stdout_line!
@@ -174,7 +128,6 @@ fn hostCrashed(bytes: [*]const u8, len: usize) callconv(.c) void {
 comptime {
     if (!builtin.is_test) {
         @export(&hostedStderrLine, .{ .name = "roc_stderr_line", .visibility = .hidden });
-        @export(&hostedStdinLine, .{ .name = "roc_stdin_line", .visibility = .hidden });
         @export(&hostedStdoutLine, .{ .name = "roc_stdout_line", .visibility = .hidden });
 
         @export(&hostAlloc, .{ .name = "roc_alloc", .visibility = .hidden });
@@ -186,14 +139,20 @@ comptime {
     }
 }
 
-/// Platform host entrypoint
+/// Platform host entrypoint.
+///
+/// Synthesizes a Request from the command line so the platform can be run
+/// locally:
+///
+///     ./app [url] [method] [body]
+///
+/// The response body goes to stdout, and the exit code is 0 for a 2xx/3xx
+/// status and 1 otherwise.
 fn platform_main(argc: usize, argv: [*][*:0]u8) c_int {
     const io = std.Io.Threaded.global_single_threaded.io();
-    var stdin_buffer: [4096]u8 = undefined;
 
     var host_env = HostEnv{
         .gpa = std.heap.DebugAllocator(.{}){},
-        .stdin_reader = std.Io.File.stdin().readerStreaming(io, &stdin_buffer),
         .roc_env = undefined,
     };
     host_env.roc_env = .{
@@ -204,42 +163,39 @@ fn platform_main(argc: usize, argv: [*][*:0]u8) c_int {
     var roc_host = abi.makeRocHost(&host_env.roc_env);
     g_roc_host = &roc_host;
 
-    // Build List(Str) from argc/argv
-    std.log.debug("[HOST] Building args...", .{});
-    const args_list = buildStrArgsList(argc, argv, &roc_host);
-    std.log.debug("[HOST] args_list ptr=0x{x} len={d}", .{ @intFromPtr(args_list.elements_ptr), args_list.length });
+    // argv[0] is the executable itself.
+    const url = argAt(argc, argv, 1) orelse "http://localhost/";
+    const method = argAt(argc, argv, 2) orelse "GET";
+    const body = argAt(argc, argv, 3) orelse "";
 
-    // Call the app's main! entrypoint - returns I32 exit code
-    std.log.debug("[HOST] Calling roc_main...", .{});
+    // roc_main takes ownership of the Request, so these are not decref'd here.
+    const request: abi.Request = .{
+        .method = abi.RocStr.fromSlice(method, &roc_host),
+        .url = abi.RocStr.fromSlice(url, &roc_host),
+        .body = abi.RocStr.fromSlice(body, &roc_host),
+    };
 
-    const exit_code = roc_main(args_list);
-    std.log.debug("[HOST] Returned from roc, exit_code={d}", .{exit_code});
+    const response = roc_main(request);
+    const status = response.status;
 
-    // Check for memory leaks before returning
+    const stdout = std.Io.File.stdout();
+    stdout.writeStreamingAll(io, response.body.asSlice()) catch {};
+
+    // The host owns the returned Response.
+    response.decref(&roc_host);
+
     const leak_status = host_env.gpa.deinit();
     if (leak_status == .leak) {
         std.log.err("\x1b[33mMemory leak detected!\x1b[0m", .{});
         std.process.exit(1);
     }
 
-    return exit_code;
+    return if (status < 400) 0 else 1;
 }
 
-/// Build a RocList of RocStr from argc/argv
-fn buildStrArgsList(argc: usize, argv: [*][*:0]u8, roc_host: *abi.RocHost) abi.RocList(abi.RocStr) {
-    if (argc == 0) {
-        return abi.RocList(abi.RocStr).empty();
-    }
-
-    const args_list = abi.RocList(abi.RocStr).allocate(argc, roc_host);
-    const args_ptr: [*]abi.RocStr = args_list.elements_ptr.?;
-
-    // Build each argument string
-    for (0..argc) |i| {
-        const arg_cstr = argv[i];
-        const arg_len = std.mem.len(arg_cstr);
-        args_ptr[i] = abi.RocStr.fromSlice(arg_cstr[0..arg_len], roc_host);
-    }
-
-    return args_list;
+/// Return argv[index] as a slice, or null when there are fewer arguments.
+fn argAt(argc: usize, argv: [*][*:0]u8, index: usize) ?[]const u8 {
+    if (index >= argc) return null;
+    const cstr = argv[index];
+    return cstr[0..std.mem.len(cstr)];
 }

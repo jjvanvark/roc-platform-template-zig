@@ -1,15 +1,16 @@
 app [main!] { pf: platform "../platform/main.roc" }
 
 import pf.Stdout
+import pf.Request exposing [Request]
+import pf.Response exposing [Response]
 
-## Phase 2 worker: the request URL arrives as the single argument, and whatever
-## is written to stdout becomes the response body.
-main! : List(Str) => Try({}, [Exit(I32), StdoutErr(Str), ..])
-main! = |args| {
-	url = Str.join_with(args, "")
+## Responds to every request with a plain-text summary of it.
+main! : Request => Response
+main! = |request| {
+    _ = Stdout.line!("${request.method} ${request.url}")
 
-	Stdout.line!("Hello from Roc, running on Cloudflare Workers")?
-	Stdout.line!("You requested: ${url}")?
-
-	Ok({})
+    {
+        status: 200,
+        body: "Hello from Roc, running on Cloudflare Workers\nMethod: ${request.method}\nURL: ${request.url}\n",
+    }
 }

@@ -3,30 +3,54 @@
 [roc_badge]: https://img.shields.io/endpoint?url=https%3A%2F%2Fpastebin.com%2Fraw%2FcFzuCCd7
 [roc_link]: https://github.com/roc-lang/roc
 
-# Roc platform template for Zig
+# Roc platform for Cloudflare Workers
 
-A template for building [Roc platforms](https://www.roc-lang.org/platforms) using [Zig](https://ziglang.org).
+A [Roc platform](https://www.roc-lang.org/platforms) for [Cloudflare Workers](https://workers.cloudflare.com), with a [Zig](https://ziglang.org) host compiled to `wasm32`.
+
+Forked from [roc-platform-template-zig](https://github.com/lukewilliamboswell/roc-platform-template-zig).
 
 ## Requirements
 
 - [Zig](https://ziglang.org/download/) 0.16.0 or later
-- [Roc](https://www.roc-lang.org/) (for bundling)
+- [Roc](https://www.roc-lang.org/) — see `.roc-version` for the nightly this tracks
+- Node.js, for `wrangler`
 
-## Examples
+## Writing a worker
 
-Use the current release bundle as the platform dependency:
+An app handles one request and returns one response:
 
 ```roc
-app [main!] { pf: platform "https://github.com/lukewilliamboswell/roc-platform-template-zig/releases/download/1.0.0/AnZoxzoGPtSGQ15EQh6pBeeaHJ7aizP9MQhK81dES3Uq.tar.zst" }
+app [main!] { pf: platform "../platform/main.roc" }
+
+import pf.Request exposing [Request]
+import pf.Response exposing [Response]
+
+main! : Request => Response
+main! = |request| {
+    { status: 200, body: "Hello from ${request.url}\n" }
+}
 ```
 
-Run examples with interpreter: `roc examples/<name>.roc`
+`Request` carries `method`, `url` and `body`; `Response` carries `status` and `body`. Headers are not modelled yet.
 
-Build standalone executable: `roc build examples/<name>.roc`
+`Stdout.line!` and `Stderr.line!` write to the Worker log, visible in `wrangler tail`.
+
+## Running
+
+```bash
+npm install
+npm run dev      # build the wasm and serve it with wrangler
+npm run deploy   # build and publish
+```
+
+The examples also build as native executables, which is the fastest way to iterate without wrangler in the loop. The native host synthesizes a request from the command line and prints the response body:
+
+```bash
+roc build examples/echo.roc --output=echo
+./echo https://example.com/submit POST 'a body'
+```
 
 ## Documentation
-
-Platform API docs are published at <https://lukewilliamboswell.github.io/roc-platform-template-zig/>.
 
 Generate docs locally:
 
@@ -36,13 +60,13 @@ zig build docs
 
 ## Testing
 
-The checked-in examples use the latest release bundle so they can be copied directly. `zig build test` rewrites temporary copies to use the local `platform/main.roc` before running them.
+`zig build test` runs the examples against the local `platform/main.roc` as native executables, driving them through the command-line request interface described above.
 
-[`scripts/test_spec.json`](scripts/test_spec.json) is the source of truth for example coverage. Every example has one entry and can define any number of named cases. A case can provide command-line arguments, stdin, environment variables, an expected exit code, and combined or stream-specific output assertions. The runner builds each example once and reuses that binary for all of its cases on Linux, macOS, and Windows.
+[`scripts/test_spec.json`](scripts/test_spec.json) is the source of truth for example coverage. Every example has one entry and can define any number of named cases. A case can provide command-line arguments, environment variables, an expected exit code, and combined or stream-specific output assertions. The runner builds each example once and reuses that binary for all of its cases on Linux, macOS, and Windows.
 
 ```
 $ zig build test
-All test stages passed (check: 12, test: 2, build: 12, run: 17)
+All test stages passed (check: 4, build: 4, run: 6)
 ```
 
 Run the spec directly against another examples directory or only selected stages:
@@ -119,5 +143,8 @@ This creates a `.tar.zst` bundle containing all `.roc` files and prebuilt host l
 | arm64win | `platform/targets/arm64win/host.lib` |
 | arm64musl | `platform/targets/arm64musl/libhost.a` |
 | arm64v1musl | `platform/targets/arm64v1musl/libhost.a` |
+| wasm32 | `platform/targets/wasm32/libhost.a` |
 
 Linux musl targets include statically linked C runtime files (`crt1.o`, `libc.a`) for standalone executables. The `v1` targets use each architecture's baseline instruction set for CPUs without the features required by the default targets.
+
+`wasm32` is the target Cloudflare Workers use, and is the only one built from `src/host_wasm.zig` rather than `src/host.zig`. Build it alone with `zig build wasm`.

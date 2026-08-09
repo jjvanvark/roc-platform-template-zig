@@ -601,6 +601,100 @@ pub const RocEnv = struct {
     roc_io: RocIo,
 };
 
+/// Element type for Request
+pub const Request = if (@sizeOf(usize) == 4) extern struct {
+    @"method": RocStr,
+    @"url": RocStr,
+    @"body": RocStr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"method".decref(roc_host);
+        value.@"url".decref(roc_host);
+        value.@"body".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"method".incref(amount);
+        value.@"url".incref(amount);
+        value.@"body".incref(amount);
+    }
+} else extern struct {
+    @"method": RocStr,
+    @"url": RocStr,
+    @"body": RocStr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"method".decref(roc_host);
+        value.@"url".decref(roc_host);
+        value.@"body".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"method".incref(amount);
+        value.@"url".incref(amount);
+        value.@"body".incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(Request) != 72) @compileError("Request size mismatch");
+        if (@alignOf(Request) != 8) @compileError("Request alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(Request) != 36) @compileError("Request size mismatch");
+        if (@alignOf(Request) != 4) @compileError("Request alignment mismatch");
+    }
+}
+
+/// Element type for Response
+pub const Response = if (@sizeOf(usize) == 4) extern struct {
+    @"body": RocStr,
+    @"status": u16,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"body".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"body".incref(amount);
+    }
+} else extern struct {
+    @"body": RocStr,
+    @"status": u16,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"body".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"body".incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(Response) != 32) @compileError("Response size mismatch");
+        if (@alignOf(Response) != 8) @compileError("Response alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(Response) != 16) @compileError("Response size mismatch");
+        if (@alignOf(Response) != 4) @compileError("Response alignment mismatch");
+    }
+}
+
 /// Tag discriminant for Try.
 pub const HostStderr_lineResultTag = enum(u8) {
     Err = 0,
@@ -657,72 +751,6 @@ comptime {
         if (@sizeOf(HostStderr_lineResult) != 16) @compileError("HostStderr_lineResult size mismatch");
         if (@alignOf(HostStderr_lineResult) != 4) @compileError("HostStderr_lineResult alignment mismatch");
         if (@offsetOf(HostStderr_lineResult, "tag") != 12) @compileError("HostStderr_lineResult tag offset mismatch");
-    }
-}
-
-/// Tag discriminant for Try.
-pub const HostStdin_lineResultTag = enum(u8) {
-    Err = 0,
-    Ok = 1,
-};
-
-/// Payload union for Try.
-pub const HostStdin_lineResultPayload = extern union {
-        err: RocStr,
-        ok: RocStr,
-};
-
-/// Tag union: Try
-pub const HostStdin_lineResult = if (@sizeOf(usize) == 4) extern struct {
-    payload: [12]u8 align(4),
-    tag: HostStdin_lineResultTag,
-    pub fn payload_err(self: *const @This()) RocStr {
-        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
-        return ptr.*;
-    }
-    pub fn payload_ok(self: *const @This()) RocStr {
-        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
-        return ptr.*;
-    }
-    /// Recursively decrement Roc-owned payloads.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        decrefHostStdin_lineResult(self, roc_host);
-    }
-
-    /// Increment Roc-owned payloads.
-    pub fn incref(self: @This(), amount: isize) void {
-        increfHostStdin_lineResult(self, amount);
-    }
-} else extern struct {
-    payload: HostStdin_lineResultPayload,
-    tag: HostStdin_lineResultTag,
-    pub fn payload_err(self: *const @This()) RocStr {
-        return self.payload.err;
-    }
-    pub fn payload_ok(self: *const @This()) RocStr {
-        return self.payload.ok;
-    }
-    /// Recursively decrement Roc-owned payloads.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        decrefHostStdin_lineResult(self, roc_host);
-    }
-
-    /// Increment Roc-owned payloads.
-    pub fn incref(self: @This(), amount: isize) void {
-        increfHostStdin_lineResult(self, amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(HostStdin_lineResult) != 32) @compileError("HostStdin_lineResult size mismatch");
-        if (@alignOf(HostStdin_lineResult) != 8) @compileError("HostStdin_lineResult alignment mismatch");
-        if (@offsetOf(HostStdin_lineResult, "tag") != 24) @compileError("HostStdin_lineResult tag offset mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(HostStdin_lineResult) != 16) @compileError("HostStdin_lineResult size mismatch");
-        if (@alignOf(HostStdin_lineResult) != 4) @compileError("HostStdin_lineResult alignment mismatch");
-        if (@offsetOf(HostStdin_lineResult, "tag") != 12) @compileError("HostStdin_lineResult tag offset mismatch");
     }
 }
 
@@ -785,65 +813,6 @@ comptime {
     }
 }
 
-/// Tag discriminant for Try.
-pub const TryType16Tag = enum(u8) {
-    Err = 0,
-    Ok = 1,
-};
-
-/// Payload union for Try.
-pub const TryType16Payload = extern union {
-        err: i32,
-        ok: [0]u8,
-};
-
-/// Tag union: Try
-pub const TryType16 = if (@sizeOf(usize) == 4) extern struct {
-    payload: [4]u8 align(4),
-    tag: TryType16Tag,
-    pub fn payload_err(self: *const @This()) i32 {
-        const ptr: *const i32 = @ptrCast(@alignCast(&self.payload));
-        return ptr.*;
-    }
-    /// Recursively decrement Roc-owned payloads.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        decrefTryType16(self, roc_host);
-    }
-
-    /// Increment Roc-owned payloads.
-    pub fn incref(self: @This(), amount: isize) void {
-        increfTryType16(self, amount);
-    }
-} else extern struct {
-    payload: TryType16Payload,
-    tag: TryType16Tag,
-    pub fn payload_err(self: *const @This()) i32 {
-        return self.payload.err;
-    }
-    /// Recursively decrement Roc-owned payloads.
-    pub fn decref(self: @This(), roc_host: *RocHost) void {
-        decrefTryType16(self, roc_host);
-    }
-
-    /// Increment Roc-owned payloads.
-    pub fn incref(self: @This(), amount: isize) void {
-        increfTryType16(self, amount);
-    }
-};
-
-comptime {
-    if (@sizeOf(usize) == 8) {
-        if (@sizeOf(TryType16) != 8) @compileError("TryType16 size mismatch");
-        if (@alignOf(TryType16) != 4) @compileError("TryType16 alignment mismatch");
-        if (@offsetOf(TryType16, "tag") != 4) @compileError("TryType16 tag offset mismatch");
-    }
-    if (@sizeOf(usize) == 4) {
-        if (@sizeOf(TryType16) != 8) @compileError("TryType16 size mismatch");
-        if (@alignOf(TryType16) != 4) @compileError("TryType16 alignment mismatch");
-        if (@offsetOf(TryType16, "tag") != 4) @compileError("TryType16 tag offset mismatch");
-    }
-}
-
 /// Arguments for Host.stderr_line!
 /// Roc signature: Str => Try({}, [StderrErr(Str)])
 /// Refcounted fields are owned by the hosted function.
@@ -878,28 +847,6 @@ fn increfHostStderr_lineResult(value: HostStderr_lineResult, amount: isize) void
     }
 }
 
-fn decrefHostStdin_lineResult(value: HostStdin_lineResult, roc_host: *RocHost) void {
-    switch (value.tag) {
-        .Err => {
-        value.payload_err().decref(roc_host);
-        },
-        .Ok => {
-        value.payload_ok().decref(roc_host);
-        },
-    }
-}
-
-fn increfHostStdin_lineResult(value: HostStdin_lineResult, amount: isize) void {
-    switch (value.tag) {
-        .Err => {
-        value.payload_err().incref(amount);
-        },
-        .Ok => {
-        value.payload_ok().incref(amount);
-        },
-    }
-}
-
 fn decrefHostStdout_lineResult(value: HostStdout_lineResult, roc_host: *RocHost) void {
     switch (value.tag) {
         .Err => {
@@ -914,22 +861,6 @@ fn increfHostStdout_lineResult(value: HostStdout_lineResult, amount: isize) void
         .Err => {
         value.payload_err().incref(amount);
         },
-        .Ok => {},
-    }
-}
-
-fn decrefTryType16(value: TryType16, roc_host: *RocHost) void {
-    _ = roc_host;
-    switch (value.tag) {
-        .Err => {},
-        .Ok => {},
-    }
-}
-
-fn increfTryType16(value: TryType16, amount: isize) void {
-    _ = amount;
-    switch (value.tag) {
-        .Err => {},
         .Ok => {},
     }
 }
@@ -954,10 +885,6 @@ pub extern fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void;
 /// Hosted symbol for Host.stderr_line!
 /// Roc signature: Str => Try({}, [StderrErr(Str)])
 pub extern fn roc_stderr_line(arg0: RocStr) callconv(.c) HostStderr_lineResult;
-
-/// Hosted symbol for Host.stdin_line!
-/// Roc signature: {} => Try(Str, [StdinErr(Str)])
-pub extern fn roc_stdin_line() callconv(.c) HostStdin_lineResult;
 
 /// Hosted symbol for Host.stdout_line!
 /// Roc signature: Str => Try({}, [StdoutErr(Str)])
@@ -1104,5 +1031,5 @@ pub fn makeRocHost(env: *RocEnv) RocHost {
 // Roc exports these symbols from the app with their natural C ABI signatures.
 
 /// Entrypoint: main_for_host!
-pub extern fn roc_main(arg0: RocList(RocStr)) callconv(.c) i32;
+pub extern fn roc_main(arg0: Request) callconv(.c) Response;
 

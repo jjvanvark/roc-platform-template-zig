@@ -1,16 +1,10 @@
-app [main!] { pf: platform "https://github.com/lukewilliamboswell/roc-platform-template-zig/releases/download/1.0.0/AnZoxzoGPtSGQ15EQh6pBeeaHJ7aizP9MQhK81dES3Uq.tar.zst" }
+app [main!] { pf: platform "../platform/main.roc" }
 
-import pf.Stdin
-import pf.Stdout
+import pf.Request exposing [Request]
+import pf.Response exposing [Response]
 
-# Demonstrates: Stdin.line!, interactive I/O, effectful functions
-
-main! : List(Str) => Try({}, [Exit(I32), StdinErr(Str), StdoutErr(Str), ..])
-main! = |_args| {
-    Stdout.line!("Enter something and I'll echo it back:")?
-
-    input = Stdin.line!({})?
-    Stdout.line!("You entered: ${input}")?
-
-    Ok({})
+## Echoes the request back as plain text.
+main! : Request => Response
+main! = |request| {
+    { status: 200, body: "${request.method} ${request.url}\n${request.body}" }
 }
