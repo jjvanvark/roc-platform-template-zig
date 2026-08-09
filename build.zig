@@ -157,13 +157,18 @@ pub fn build(b: *std.Build) void {
     );
     wasm_step.dependOn(&copy_wasm.step);
 
-    // Worker tooling step: installs workers-zig's `gen_entry` and its `shim.js`.
+    // Worker tooling step: installs workers-zig's `gen_entry`.
     //
     // `gen_entry` reads a finished .wasm and writes the entry.js that re-exports
     // the handler plus any Durable Object / Workflow classes it finds in the
     // export section. It runs after `roc build` has produced the wasm, so it
     // cannot be wired into this graph directly — `npm run build` drives it.
-    const tools_step = b.step("worker-tools", "Install the workers-zig entry.js generator and shim");
+    //
+    // worker/shim.js is no longer copied from the workers-zig dependency: it is
+    // a platform-owned fork now, carrying the "Postgres over Hyperdrive"
+    // imports that back Host.pg_query!/pg_execute!. Upgrading workers-zig means
+    // re-merging its shim changes into worker/shim.js by hand.
+    const tools_step = b.step("worker-tools", "Install the workers-zig entry.js generator");
     const workers_dep = b.dependency("workers_zig", .{});
     const gen_entry = b.addExecutable(.{
         .name = "gen_entry",
@@ -173,10 +178,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tools_step.dependOn(&b.addInstallArtifact(gen_entry, .{}).step);
-
-    const copy_shim = b.addUpdateSourceFiles();
-    copy_shim.addCopyFileToSource(workers_dep.path("js/shim.js"), "worker/shim.js");
-    tools_step.dependOn(&copy_shim.step);
 
     // Native step: build only for the current platform (with full cleanup first)
     const native_step = b.step("native", "Build host library for native platform only");

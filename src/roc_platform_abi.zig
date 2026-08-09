@@ -606,7 +606,7 @@ pub const Request = if (@sizeOf(usize) == 4) extern struct {
     @"method": RocStr,
     @"url": RocStr,
     @"headers": RocList(Header),
-    @"body": RocStr,
+    @"body": RocListWith(u8, false),
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
@@ -636,7 +636,7 @@ pub const Request = if (@sizeOf(usize) == 4) extern struct {
     @"method": RocStr,
     @"url": RocStr,
     @"headers": RocList(Header),
-    @"body": RocStr,
+    @"body": RocListWith(u8, false),
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
@@ -724,7 +724,7 @@ comptime {
 /// Element type for Response
 pub const Response = if (@sizeOf(usize) == 4) extern struct {
     @"headers": RocList(Header),
-    @"body": RocStr,
+    @"body": RocListWith(u8, false),
     @"status": u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -749,7 +749,7 @@ pub const Response = if (@sizeOf(usize) == 4) extern struct {
     }
 } else extern struct {
     @"headers": RocList(Header),
-    @"body": RocStr,
+    @"body": RocListWith(u8, false),
     @"status": u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
@@ -1096,7 +1096,7 @@ pub const HostR2_getResultTag = enum(u8) {
 /// Payload union for Try.
 pub const HostR2_getResultPayload = extern union {
         err: R2ErrOrR2NotFound,
-        ok: RocStr,
+        ok: RocListWith(u8, false),
 };
 
 /// Tag union: Try
@@ -1107,8 +1107,8 @@ pub const HostR2_getResult = if (@sizeOf(usize) == 4) extern struct {
         const ptr: *const R2ErrOrR2NotFound = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
-    pub fn payload_ok(self: *const @This()) RocStr {
-        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+    pub fn payload_ok(self: *const @This()) RocListWith(u8, false) {
+        const ptr: *const RocListWith(u8, false) = @ptrCast(@alignCast(&self.payload));
         return ptr.*;
     }
     /// Recursively decrement Roc-owned payloads.
@@ -1126,7 +1126,7 @@ pub const HostR2_getResult = if (@sizeOf(usize) == 4) extern struct {
     pub fn payload_err(self: *const @This()) R2ErrOrR2NotFound {
         return self.payload.err;
     }
-    pub fn payload_ok(self: *const @This()) RocStr {
+    pub fn payload_ok(self: *const @This()) RocListWith(u8, false) {
         return self.payload.ok;
     }
     /// Recursively decrement Roc-owned payloads.
@@ -1403,6 +1403,14 @@ comptime {
     }
 }
 
+// Hand-written, not glue-generated: `Try(Str, [PgErr(Str)])` has the same
+// layout as `Try(Str, [D1Err(Str)])` (a single error tag carries no extra
+// discriminant), so the Pg host effects reuse the D1 result types. If
+// `roc glue` is re-run it will emit HostPg_* definitions of its own; delete
+// these aliases then.
+pub const HostPg_queryResult = HostD1_queryResult;
+pub const HostPg_executeResult = HostD1_executeResult;
+
 /// Tag discriminant for Try.
 pub const HostQueue_sendResultTag = enum(u8) {
     Err = 0,
@@ -1646,7 +1654,7 @@ pub const HostR2_deleteArgs = extern struct {
 };
 
 /// Arguments for Host.r2_get!
-/// Roc signature: Str, Str => Try(Str, [R2Err(Str), R2NotFound])
+/// Roc signature: Str, Str => Try(List(U8), [R2Err(Str), R2NotFound])
 /// Refcounted fields are owned by the hosted function.
 pub const HostR2_getArgs = extern struct {
     arg0: RocStr,
@@ -1654,12 +1662,12 @@ pub const HostR2_getArgs = extern struct {
 };
 
 /// Arguments for Host.r2_put!
-/// Roc signature: Str, Str, Str => Try({}, [R2Err(Str)])
+/// Roc signature: Str, Str, List(U8) => Try({}, [R2Err(Str)])
 /// Refcounted fields are owned by the hosted function.
 pub const HostR2_putArgs = extern struct {
     arg0: RocStr,
     arg1: RocStr,
-    arg2: RocStr,
+    arg2: RocListWith(u8, false),
 };
 
 /// Arguments for Host.stderr_line!
@@ -1991,12 +1999,12 @@ pub extern fn roc_queue_send(arg0: RocStr, arg1: RocStr) callconv(.c) HostQueue_
 pub extern fn roc_r2_delete(arg0: RocStr, arg1: RocStr) callconv(.c) HostR2_deleteResult;
 
 /// Hosted symbol for Host.r2_get!
-/// Roc signature: Str, Str => Try(Str, [R2Err(Str), R2NotFound])
+/// Roc signature: Str, Str => Try(List(U8), [R2Err(Str), R2NotFound])
 pub extern fn roc_r2_get(arg0: RocStr, arg1: RocStr) callconv(.c) HostR2_getResult;
 
 /// Hosted symbol for Host.r2_put!
-/// Roc signature: Str, Str, Str => Try({}, [R2Err(Str)])
-pub extern fn roc_r2_put(arg0: RocStr, arg1: RocStr, arg2: RocStr) callconv(.c) HostR2_deleteResult;
+/// Roc signature: Str, Str, List(U8) => Try({}, [R2Err(Str)])
+pub extern fn roc_r2_put(arg0: RocStr, arg1: RocStr, arg2: RocListWith(u8, false)) callconv(.c) HostR2_deleteResult;
 
 /// Hosted symbol for Host.stderr_line!
 /// Roc signature: Str => Try({}, [StderrErr(Str)])

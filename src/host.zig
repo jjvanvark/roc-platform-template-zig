@@ -159,17 +159,27 @@ fn storeDelete(comptime kind: []const u8, binding: []const u8, key: []const u8) 
     }
 }
 
+/// libc's `environ`, declared here rather than reached through `std.c`.
+///
+/// Both `std.c` and an `extern "c"` declaration make Zig demand `link_libc` at
+/// *compile* time, which the musl targets cannot satisfy: this is a static
+/// archive, and libc only joins at the final link, when Roc pulls in `crt1.o`
+/// and `libc.a` alongside `libhost.a`. A plain `extern` needs no such promise
+/// and resolves to the same symbol — `environ` on ELF, `_environ` on Mach-O —
+/// at the link where it was always going to be resolved.
+extern var environ: [*:null]?[*:0]u8;
+
 /// Look up a process environment variable.
 ///
 /// The Workers analogue of a text binding is an environment variable, so the
 /// native host reads the real process environment rather than stubbing this
-/// out. `std.c.environ` is the portable-enough route: the native targets all
-/// link libc, and Windows msvcrt does not expose it under this name.
+/// out. Windows is the exception: msvcrt does not expose `environ` under this
+/// name, so there is nothing to read.
 fn processEnvGet(name: []const u8) ?[]const u8 {
     if (builtin.os.tag == .windows) return null;
 
     var i: usize = 0;
-    while (std.c.environ[i]) |entry| : (i += 1) {
+    while (environ[i]) |entry| : (i += 1) {
         const pair = std.mem.sliceTo(entry, 0);
         const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
         if (std.mem.eql(u8, pair[0..eq], name)) return pair[eq + 1 ..];
@@ -239,22 +249,22 @@ fn hostedR2Get(binding: abi.RocStr, key: abi.RocStr) callconv(.c) abi.HostR2_get
     const value = storeGet("r2", owned_binding.asSlice(), owned_key.asSlice()) catch {
         return payload.errUnionStr(Result, abi.R2ErrOrR2NotFound, "r2err", .R2Err, "out of memory", roc_host);
     };
-    if (value) |v| return payload.okStr(Result, v, roc_host);
+    if (value) |v| return payload.okBytes(Result, v, roc_host);
     return payload.errUnionEmpty(Result, abi.R2ErrOrR2NotFound, .R2NotFound);
 }
 
 /// Hosted function: Host.r2_put!
-fn hostedR2Put(binding: abi.RocStr, key: abi.RocStr, body: abi.RocStr) callconv(.c) abi.HostR2_putResult {
+fn hostedR2Put(binding: abi.RocStr, key: abi.RocStr, body: payload.RocBytes) callconv(.c) abi.HostR2_putResult {
     const Result = abi.HostR2_putResult;
     const roc_host = g_roc_host.?;
     var owned_binding = binding;
     var owned_key = key;
-    var owned_body = body;
+    const owned_body = body;
     defer owned_binding.decref(roc_host);
     defer owned_key.decref(roc_host);
     defer owned_body.decref(roc_host);
 
-    storePut("r2", owned_binding.asSlice(), owned_key.asSlice(), owned_body.asSlice()) catch {
+    storePut("r2", owned_binding.asSlice(), owned_key.asSlice(), owned_body.items()) catch {
         return payload.errStr(Result, "out of memory", roc_host);
     };
     return payload.okEmpty(Result);
@@ -301,6 +311,34 @@ fn hostedD1Execute(binding: abi.RocStr, sql: abi.RocStr, params: abi.RocStr) cal
     defer owned_params.decref(roc_host);
 
     return payload.errStr(abi.HostD1_executeResult, d1_unavailable, roc_host);
+}
+
+const pg_unavailable = "Postgres is not available in the native host — run this worker with wrangler";
+
+/// Hosted function: Host.pg_query!
+fn hostedPgQuery(binding: abi.RocStr, sql: abi.RocStr, params: abi.RocStr) callconv(.c) abi.HostPg_queryResult {
+    const roc_host = g_roc_host.?;
+    var owned_binding = binding;
+    var owned_sql = sql;
+    var owned_params = params;
+    defer owned_binding.decref(roc_host);
+    defer owned_sql.decref(roc_host);
+    defer owned_params.decref(roc_host);
+
+    return payload.errStr(abi.HostPg_queryResult, pg_unavailable, roc_host);
+}
+
+/// Hosted function: Host.pg_execute!
+fn hostedPgExecute(binding: abi.RocStr, sql: abi.RocStr, params: abi.RocStr) callconv(.c) abi.HostPg_executeResult {
+    const roc_host = g_roc_host.?;
+    var owned_binding = binding;
+    var owned_sql = sql;
+    var owned_params = params;
+    defer owned_binding.decref(roc_host);
+    defer owned_sql.decref(roc_host);
+    defer owned_params.decref(roc_host);
+
+    return payload.errStr(abi.HostPg_executeResult, pg_unavailable, roc_host);
 }
 
 /// Hosted function: Host.queue_send!
@@ -374,6 +412,8 @@ comptime {
         @export(&hostedR2Delete, .{ .name = "roc_r2_delete", .visibility = .hidden });
         @export(&hostedD1Query, .{ .name = "roc_d1_query", .visibility = .hidden });
         @export(&hostedD1Execute, .{ .name = "roc_d1_execute", .visibility = .hidden });
+        @export(&hostedPgQuery, .{ .name = "roc_pg_query", .visibility = .hidden });
+        @export(&hostedPgExecute, .{ .name = "roc_pg_execute", .visibility = .hidden });
         @export(&hostedQueueSend, .{ .name = "roc_queue_send", .visibility = .hidden });
 
         @export(&hostAlloc, .{ .name = "roc_alloc", .visibility = .hidden });
@@ -439,7 +479,7 @@ fn platform_main(argc: usize, argv: [*][*:0]u8) c_int {
         .method = abi.RocStr.fromSlice(method, &roc_host),
         .url = abi.RocStr.fromSlice(url, &roc_host),
         .headers = headers,
-        .body = abi.RocStr.fromSlice(body, &roc_host),
+        .body = payload.RocBytes.fromSlice(body, &roc_host),
     };
 
     const response = roc_main(request);
@@ -456,7 +496,7 @@ fn platform_main(argc: usize, argv: [*][*:0]u8) c_int {
     if (response_headers.len > 0) {
         stdout.writeStreamingAll(io, "\n") catch {};
     }
-    stdout.writeStreamingAll(io, response.body.asSlice()) catch {};
+    stdout.writeStreamingAll(io, response.body.items()) catch {};
 
     // The host owns the returned Response.
     response.decref(&roc_host);

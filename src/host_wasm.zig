@@ -211,17 +211,17 @@ fn hostedR2Get(binding: abi.RocStr, key: abi.RocStr) callconv(.c) abi.HostR2_get
         return payload.errUnionStr(Result, abi.R2ErrOrR2NotFound, "r2err", .R2Err, @errorName(e), roc_host);
     };
 
-    if (object) |o| return payload.okStr(Result, o.body, roc_host);
+    if (object) |o| return payload.okBytes(Result, o.body, roc_host);
     return payload.errUnionEmpty(Result, abi.R2ErrOrR2NotFound, .R2NotFound);
 }
 
 /// Hosted function: Host.r2_put!
-fn hostedR2Put(binding: abi.RocStr, key: abi.RocStr, body: abi.RocStr) callconv(.c) abi.HostR2_putResult {
+fn hostedR2Put(binding: abi.RocStr, key: abi.RocStr, body: payload.RocBytes) callconv(.c) abi.HostR2_putResult {
     const Result = abi.HostR2_putResult;
     const roc_host = initHost();
     var owned_binding = binding;
     var owned_key = key;
-    var owned_body = body;
+    const owned_body = body;
     defer owned_binding.decref(roc_host);
     defer owned_key.decref(roc_host);
     defer owned_body.decref(roc_host);
@@ -230,7 +230,7 @@ fn hostedR2Put(binding: abi.RocStr, key: abi.RocStr, body: abi.RocStr) callconv(
         return payload.errStr(Result, bindingErrorMessage("R2", e, owned_binding.asSlice()), roc_host);
     };
 
-    _ = bucket.put(owned_key.asSlice(), owned_body.asSlice(), .{}) catch |e| {
+    _ = bucket.put(owned_key.asSlice(), owned_body.items(), .{}) catch |e| {
         return payload.errStr(Result, @errorName(e), roc_host);
     };
     return payload.okEmpty(Result);
@@ -297,6 +297,70 @@ fn hostedD1Execute(binding: abi.RocStr, sql: abi.RocStr, params: abi.RocStr) cal
     if (!result.success) return payload.errStr(Result, "the statement failed", roc_host);
 
     return payload.ok(Result, result.rows_written);
+}
+
+// Postgres-over-Hyperdrive imports. These are platform additions implemented
+// in worker/shim.js (marked "Postgres over Hyperdrive"), not part of upstream
+// workers-zig, which is why they are declared here instead of js.zig. Each
+// returns a handle to `{ rows, count, error }`; a non-empty `error` means the
+// query failed.
+extern "env" fn pg_query(hd: u32, sql_ptr: [*]const u8, sql_len: u32, params_ptr: [*]const u8, params_len: u32) u32;
+extern "env" fn pg_execute(hd: u32, sql_ptr: [*]const u8, sql_len: u32, params_ptr: [*]const u8, params_len: u32) u32;
+
+/// Hosted function: Host.pg_query!
+fn hostedPgQuery(binding: abi.RocStr, sql: abi.RocStr, params: abi.RocStr) callconv(.c) abi.HostPg_queryResult {
+    const Result = abi.HostPg_queryResult;
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_sql = sql;
+    var owned_params = params;
+    defer owned_binding.decref(roc_host);
+    defer owned_sql.decref(roc_host);
+    defer owned_params.decref(roc_host);
+
+    const hd = lookupBinding(workers.Hyperdrive, owned_binding.asSlice()) catch |e| {
+        return payload.errStr(Result, bindingErrorMessage("Hyperdrive", e, owned_binding.asSlice()), roc_host);
+    };
+
+    const sql_slice = owned_sql.asSlice();
+    const params_slice = if (owned_params.asSlice().len > 0) owned_params.asSlice() else "[]";
+    const h = pg_query(hd.handle, sql_slice.ptr, @intCast(sql_slice.len), params_slice.ptr, @intCast(params_slice.len));
+    defer workers.js.js_release(h);
+
+    if (workers.js.getStringProp(h, "error", hd.allocator) catch null) |message| {
+        if (message.len > 0) return payload.errStr(Result, message, roc_host);
+    }
+    const rows = (workers.js.getStringProp(h, "rows", hd.allocator) catch null) orelse {
+        return payload.errStr(Result, "could not read the Postgres result", roc_host);
+    };
+    return payload.okStr(Result, rows, roc_host);
+}
+
+/// Hosted function: Host.pg_execute!
+fn hostedPgExecute(binding: abi.RocStr, sql: abi.RocStr, params: abi.RocStr) callconv(.c) abi.HostPg_executeResult {
+    const Result = abi.HostPg_executeResult;
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_sql = sql;
+    var owned_params = params;
+    defer owned_binding.decref(roc_host);
+    defer owned_sql.decref(roc_host);
+    defer owned_params.decref(roc_host);
+
+    const hd = lookupBinding(workers.Hyperdrive, owned_binding.asSlice()) catch |e| {
+        return payload.errStr(Result, bindingErrorMessage("Hyperdrive", e, owned_binding.asSlice()), roc_host);
+    };
+
+    const sql_slice = owned_sql.asSlice();
+    const params_slice = if (owned_params.asSlice().len > 0) owned_params.asSlice() else "[]";
+    const h = pg_execute(hd.handle, sql_slice.ptr, @intCast(sql_slice.len), params_slice.ptr, @intCast(params_slice.len));
+    defer workers.js.js_release(h);
+
+    if (workers.js.getStringProp(h, "error", hd.allocator) catch null) |message| {
+        if (message.len > 0) return payload.errStr(Result, message, roc_host);
+    }
+    const count = workers.js.getIntProp(h, "count");
+    return payload.ok(Result, @as(u64, @intCast(@max(count, 0))));
 }
 
 /// Hosted function: Host.queue_send!
@@ -388,7 +452,7 @@ fn toRocRequest(request: *workers.Request, roc_host: *abi.RocHost) !abi.Request 
         .method = abi.RocStr.fromSlice(@tagName(request.method()), roc_host),
         .url = abi.RocStr.fromSlice(url, roc_host),
         .headers = headers,
-        .body = abi.RocStr.fromSlice(body, roc_host),
+        .body = payload.RocBytes.fromSlice(body, roc_host),
     };
 }
 
@@ -410,7 +474,7 @@ fn toWorkersResponse(roc_response: abi.Response) workers.Response {
         response.setHeader("content-type", "text/plain; charset=utf-8");
     }
 
-    response.setBody(roc_response.body.asSlice());
+    response.setBody(roc_response.body.items());
     return response;
 }
 
@@ -469,6 +533,8 @@ comptime {
         @export(&hostedR2Delete, .{ .name = "roc_r2_delete", .visibility = .hidden });
         @export(&hostedD1Query, .{ .name = "roc_d1_query", .visibility = .hidden });
         @export(&hostedD1Execute, .{ .name = "roc_d1_execute", .visibility = .hidden });
+        @export(&hostedPgQuery, .{ .name = "roc_pg_query", .visibility = .hidden });
+        @export(&hostedPgExecute, .{ .name = "roc_pg_execute", .visibility = .hidden });
         @export(&hostedQueueSend, .{ .name = "roc_queue_send", .visibility = .hidden });
 
         @export(&hostAlloc, .{ .name = "roc_alloc", .visibility = .hidden });

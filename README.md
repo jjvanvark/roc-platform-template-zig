@@ -26,18 +26,43 @@ import pf.Request exposing [Request]
 import pf.Response exposing [Response]
 
 main! : Request => Response
-main! = |request| {
-    {
-        status: 200,
-        headers: [{ name: "content-type", value: "text/plain" }],
-        body: "Hello from ${request.url}\n",
-    }
-}
+main! = |request|
+    Response.text(
+        200,
+        [{ name: "content-type", value: "text/plain" }],
+        "Hello from ${request.url}\n",
+    )
 ```
 
 `Request` carries `method`, `url`, `headers` and `body`; `Response` carries `status`, `headers` and `body`. A `Header` is `{ name, value }`.
 
 Cloudflare lowercases incoming header names and joins repeated headers into one comma-separated value, so look them up in lower case. When a response sets no `content-type`, the embedder defaults it to `text/plain`.
+
+### Bodies are bytes
+
+`body` is a `List(U8)` on both `Request` and `Response`, so a worker can handle
+an image, a zip or a protobuf, not just UTF-8. Bytes travel unchanged from the
+client through to the Roc app and back — nothing decodes them on the way.
+
+Text is the common case, so it has helpers rather than manual encoding:
+
+```roc
+request.text()        # Try(Str, [BadUtf8(...)]) — decode the body as UTF-8
+request.text_lossy()  # Str — same, with U+FFFD for malformed bytes
+
+Response.text(200, [], "Hello\n")   # build a response from a Str
+```
+
+`text` returns a `Try` because a body that should be text but isn't is a client
+error: answer 400 rather than crash. Use `text_lossy` where a mangled body beats
+no body, such as logging. To pass bytes straight through, use `body` directly:
+
+```roc
+match R2.get!("BUCKET", key) {
+    Ok(body) => { status: 200, headers: [], body }
+    ...
+}
+```
 
 `Stdout.line!` and `Stderr.line!` write to the Worker log, visible in `wrangler tail`.
 
@@ -50,16 +75,16 @@ Env.get!("GREETING")                      # Ok(value) | Err(EnvNotFound) | Err(E
 Env.get_or!("GREETING", "a default")      # Str
 ```
 
-Variables come from `vars` in `wrangler.jsonc`; secrets are set with
-`wrangler secret put NAME` and read exactly the same way — Roc cannot tell them
-apart, which is the point.
+Variables come from `vars` in your `wrangler.jsonc` (see
+`wrangler.example.jsonc`); secrets are set with `wrangler secret put NAME` and
+read exactly the same way — Roc cannot tell them apart, which is the point.
 
 Asking for a binding that exists but is not text, such as a KV namespace, gives
 `EnvNotFound` rather than an error. Use `Kv`, `R2`, `D1` or `Queue` for those.
 
 Natively these read the real process environment, so `GREETING=hi ./app` works
-the same way. Windows is the exception: the native host reads `std.c.environ`,
-which msvcrt does not provide, so it reports `EnvErr` there.
+the same way. Windows is the exception: the native host reads libc's `environ`,
+which msvcrt does not provide under that name, so it reports `EnvErr` there.
 
 ### Workers KV
 
@@ -77,19 +102,25 @@ The first argument is the **binding name** from `kv_namespaces` in your wrangler
 
 KV is eventually consistent: a read straight after a write can still return the old value. Don't reach for it where you need read-after-write.
 
-### R2, D1 and Queues
+### R2, D1, Postgres and Queues
 
 ```roc
 import pf.R2
 import pf.D1
+import pf.Pg
 import pf.Queue
 
-R2.get!("BUCKET", key)                       # Ok(body) | Err(R2NotFound) | Err(R2Err(msg))
-R2.put!("BUCKET", key, body)
+R2.get!("BUCKET", key)                       # Ok(bytes) | Err(R2NotFound) | Err(R2Err(msg))
+R2.put!("BUCKET", key, bytes)
+R2.get_text!("BUCKET", key)                  # same, decoded as UTF-8
+R2.put_text!("BUCKET", key, "some text")
 R2.delete!("BUCKET", key)
 
 D1.query!("DB", "SELECT name FROM users WHERE age > ?", "[21]")   # Ok(rows_as_json)
 D1.execute!("DB", "INSERT INTO users (name) VALUES (?)", "[\"alice\"]")  # Ok(rows_written)
+
+Pg.query!("PG", "SELECT name FROM users WHERE age > $1::int", "[\"21\"]")  # Ok(rows_as_json)
+Pg.execute!("PG", "INSERT INTO users (name) VALUES ($1)", "[\"alice\"]")   # Ok(rows_written)
 
 Queue.send!("JOBS", body)
 ```
@@ -98,8 +129,10 @@ Each takes its binding name first, the same as `Kv`.
 
 Some rough edges worth knowing:
 
-- **R2 bodies are `Str`**, so only UTF-8 objects work. Binary objects need a `List(U8)` API that does not exist yet.
+- **R2 objects are bytes**, so images and archives round-trip intact. `get_text!` and `put_text!` cover UTF-8; an object that is not valid UTF-8 comes back from `get_text!` as `R2Err`, keeping its error union the same as `get!`.
+- **KV values are still `Str`**, so binary values need R2 for now.
 - **D1 has no row type.** Rows come back as a JSON array string and parameters go in as a JSON array string; use `"[]"` when there are none.
+- **Pg goes through Hyperdrive.** The binding name is a `hyperdrive` entry in the wrangler config; locally its `localConnectionString` points at any Postgres you run yourself. Rows and parameters are JSON array strings like D1, but placeholders are `$1, $2, ...` and every parameter travels as a string — cast in the SQL (`$1::uuid`, `$2::int`) where another type is needed. The queries run in the shim with [postgres.js](https://github.com/porsager/postgres), so the consuming project needs `postgres` in its `package.json`.
 - **Queues are producer-only.** Consuming needs a `queue` handler alongside `fetch`, which the platform does not expose yet.
 
 ### Running bindings natively
@@ -111,6 +144,7 @@ None of these exist outside Workers, so the native host approximates them well e
 | Env vars and secrets | The real process environment (not on Windows) |
 | KV, R2 | In-memory store scoped by binding name, for the lifetime of one process |
 | D1 | Reports that it is unavailable, rather than pretending |
+| Pg | Reports that it is unavailable, rather than pretending |
 | Queues | Writes the message to stderr |
 
 Durability, eventual consistency and real query behaviour have to be checked against the real thing.
@@ -123,6 +157,27 @@ npm run dev      # build the wasm and serve it with wrangler
 npm run deploy   # build and publish
 ```
 
+### Wrangler config
+
+There are two configs in this repo:
+
+- **`wrangler.jsonc`** configures this repo's own demo Worker (`worker/app.roc`,
+  a KV hit counter). It declares only the one binding that demo uses.
+- **`wrangler.example.jsonc`** is the reference for your own Worker: every
+  binding the platform supports, commented out, with the command that creates
+  each resource. Copy it to `wrangler.jsonc` in your project and delete what you
+  do not need.
+
+Neither ships with the platform — `bundle.sh` publishes only `platform/*.roc`
+and the prebuilt host libraries, so an app built on the platform brings its own.
+
+Two settings are required whatever your Worker does:
+
+- `compatibility_flags: ["nodejs_compat"]`, because `shim.js` imports
+  `node:fs`, `node:path` and `node:stream`
+- the `rules` `CompiledWasm` block, which is what loads `worker.wasm` as a
+  module for the shim to instantiate
+
 ### Bindings and deploying
 
 `wrangler dev` **simulates** every binding and accepts any id, so a config that
@@ -132,27 +187,32 @@ works locally can still fail on deploy:
 KV namespace 'roc_cloudflare_counter' is not valid. [code: 10042]
 ```
 
-Before deploying, each binding in `wrangler.jsonc` has to name a resource that
-exists in your account. `binding` is the only field you choose freely — it is
-the string the Roc app passes, e.g. `Kv.get!("COUNTER", "hits")`.
+Before deploying, each binding in your `wrangler.jsonc` has to name a resource
+that exists in your account. `binding` is the only field you choose freely — it
+is the string the Roc app passes, e.g. `Kv.get!("COUNTER", "hits")`.
 
 | Binding | Create it with | Goes in |
 |---------|----------------|---------|
 | KV | `wrangler kv namespace create COUNTER` | `id` — a 32-char hex id, not a name |
 | R2 | `wrangler r2 bucket create <name>` | `bucket_name` — no id involved |
 | D1 | `wrangler d1 create <name>` | `database_id` (UUID) and matching `database_name` |
+| Pg (Hyperdrive) | `wrangler hyperdrive create <name> --connection-string=...` | `id`; add `localConnectionString` for local dev |
 | Queues | `wrangler queues create <name>` | `queue` — the queue name |
 
-Each `create` command prints the snippet to paste back. Comment out any block
-you are not using: an unused binding still has to resolve on deploy. R2 and
-Queues need a paid Workers plan; KV and D1 work on the free tier.
+Each `create` command prints the snippet to paste back. Declare only the
+bindings you actually use: an unused binding still has to resolve on deploy, so
+a stray block is one more resource that has to exist. `vars` are the exception —
+they are inline text and need nothing in the account. R2 and Queues need a paid
+Workers plan; KV and D1 work on the free tier.
 
 `npm run build` runs four steps:
 
 1. `zig build wasm` compiles `src/host_wasm.zig` (plus workers-zig) to `platform/targets/wasm32/libhost.a`
-2. `zig build worker-tools` installs workers-zig's `gen_entry` and copies its `shim.js` into `worker/`
+2. `zig build worker-tools` installs workers-zig's `gen_entry`
 3. `roc build --target=wasm32` links the host with the app into `worker/worker.wasm`
 4. `gen_entry` reads that wasm and writes `worker/entry.js`
+
+`worker/shim.js` is a platform-owned fork of workers-zig's shim: it carries the "Postgres over Hyperdrive" imports that back `Host.pg_query!`/`Host.pg_execute!`, so it is no longer copied from the dependency (the old `worker-tools` copy step was removed). Upgrading workers-zig means re-merging its shim changes into `worker/shim.js` by hand — the added sections are marked.
 
 Step 3 is why workers-zig's own `addWorker()` is not used: it expects to produce the final wasm itself, and here Roc owns that link. `src/host_wasm.zig` therefore plays the role of the SDK's `src/entry.zig`, exporting `fetch` directly.
 
