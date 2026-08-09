@@ -7,7 +7,7 @@ import pf.Response exposing [Response]
 main! : Request => Response
 main! = |request| {
     match Str.ends_with(request.url, "/health") {
-        True => { status: 200, headers: [], body: "ok\n" }
-        False => { status: 404, headers: [], body: "not found\n" }
+        True => Response.text(200, [], "ok\n")
+        False => Response.text(404, [], "not found\n")
     }
 }

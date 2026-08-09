@@ -18,12 +18,12 @@ main! : Request => Response
 main! = |request| {
     accept = find_header(request.headers, "accept")
 
-    {
-        status: 200,
-        headers: [
+    Response.text(
+        200,
+        [
             { name: "content-type", value: "text/plain; charset=utf-8" },
             { name: "x-powered-by", value: "roc" },
         ],
-        body: "accept: ${accept}\n",
-    }
+        "accept: ${accept}\n",
+    )
 }

@@ -5,11 +5,11 @@ import Host
 ## `binding` is the name declared in `wrangler.jsonc` under `r2_buckets`, not
 ## the bucket name.
 ##
-## Bodies are `Str`, so this only handles UTF-8 objects. Binary objects need a
-## `List(U8)` API, which does not exist yet.
+## Bodies are `List(U8)`, so an object can hold anything — an image, a zip, a
+## gzipped export. `get_text!` and `put_text!` cover the UTF-8 case.
 R2 := [].{
     ## Read the object stored at `key`.
-    get! : Str, Str => Try(Str, [R2NotFound, R2Err(Str), ..])
+    get! : Str, Str => Try(List(U8), [R2NotFound, R2Err(Str), ..])
     get! = |binding, key|
         match Host.r2_get!(binding, key) {
             Ok(body) => Ok(body)
@@ -18,9 +18,35 @@ R2 := [].{
         }
 
     ## Write `body` at `key`, replacing any existing object.
-    put! : Str, Str, Str => Try({}, [R2Err(Str), ..])
+    put! : Str, Str, List(U8) => Try({}, [R2Err(Str), ..])
     put! = |binding, key, body|
         match Host.r2_put!(binding, key, body) {
+            Ok({}) => Ok({})
+            Err(R2Err(err)) => Err(R2Err(err))
+        }
+
+    ## Read the object at `key` and decode it as UTF-8.
+    ##
+    ## An object that is not valid UTF-8 comes back as `R2Err` rather than a
+    ## separate tag, so the error union matches `get!`. Reach for `get!` when
+    ## the object might not be text.
+    get_text! : Str, Str => Try(Str, [R2NotFound, R2Err(Str), ..])
+    get_text! = |binding, key|
+        match Host.r2_get!(binding, key) {
+            Ok(body) =>
+                match Str.from_utf8(body) {
+                    Ok(text) => Ok(text)
+                    Err(_) => Err(R2Err("the object at ${key} is not valid UTF-8"))
+                }
+
+            Err(R2NotFound) => Err(R2NotFound)
+            Err(R2Err(err)) => Err(R2Err(err))
+        }
+
+    ## Write `body` at `key` as UTF-8 text, replacing any existing object.
+    put_text! : Str, Str, Str => Try({}, [R2Err(Str), ..])
+    put_text! = |binding, key, body|
+        match Host.r2_put!(binding, key, Str.to_utf8(body)) {
             Ok({}) => Ok({})
             Err(R2Err(err)) => Err(R2Err(err))
         }

@@ -39,6 +39,17 @@
             "accept: application/json",
             "a body"
           ]
+        },
+        {
+          "name": "multibyte-body-round-trips-byte-for-byte",
+          "args": [
+            "https://example.com/submit",
+            "POST",
+            "héllo → 🌍 naïve ünicode"
+          ],
+          "stdout_contains": [
+            "héllo → 🌍 naïve ünicode"
+          ]
         }
       ]
     },
@@ -144,6 +155,17 @@
             "https://example.com/thing",
             "PUT",
             "the payload"
+          ],
+          "stdout_contains": [
+            "stored"
+          ]
+        },
+        {
+          "name": "put-multibyte-body",
+          "args": [
+            "https://example.com/thing",
+            "PUT",
+            "🌍 not plain ascii"
           ],
           "stdout_contains": [
             "stored"

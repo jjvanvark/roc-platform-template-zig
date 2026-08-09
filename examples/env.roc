@@ -19,5 +19,5 @@ main! = |_request| {
             Err(EnvErr(message)) => "error: ${message}"
         }
 
-    { status: 200, headers: [], body: "GREETING: ${greeting}\nDEFINITELY_NOT_SET: ${missing}\n" }
+    Response.text(200, [], "GREETING: ${greeting}\nDEFINITELY_NOT_SET: ${missing}\n")
 }

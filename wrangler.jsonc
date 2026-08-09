@@ -1,26 +1,22 @@
 {
+  // Config for this repo's own demo Worker (worker/app.roc, a KV hit counter).
+  //
+  // It is deliberately minimal: only the bindings the demo actually uses, so
+  // `npm run deploy` does not require account resources it never touches.
+  // For a config showing every binding the platform supports, and the two
+  // settings any Worker on this platform must set, see wrangler.example.jsonc.
+  //
+  // This file is not part of the published platform — `bundle.sh` ships only
+  // platform/*.roc and the prebuilt host libraries. Apps built on the platform
+  // bring their own wrangler config.
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "roc-cloudflare",
   "main": "worker/entry.js",
   "compatibility_date": "2026-08-01",
-  // workers-zig's shim.js imports node:fs / node:path / node:stream for its
-  // WASI and socket support, so the runtime needs the Node compat layer.
-  "compatibility_flags": ["nodejs_compat"],
 
-  // -----------------------------------------------------------------------
-  // Bindings
-  //
-  // `wrangler dev` simulates every binding locally and accepts any value, so a
-  // config that works locally can still fail on deploy with errors like
-  // "KV namespace '...' is not valid [code: 10042]". Each value below other
-  // than `binding` has to name a resource that exists in the account.
-  //
-  // `binding` is the only field chosen freely: it is the string the Roc app
-  // passes, e.g. Kv.get!("COUNTER", "hits"). Comment out any block that is not
-  // in use — an unused binding still has to resolve on deploy.
-  //
-  // R2 and Queues need a paid Workers plan; KV and D1 work on the free tier.
-  // -----------------------------------------------------------------------
+  // Required by the platform: workers-zig's shim.js imports node:fs /
+  // node:path / node:stream for its WASI and socket support.
+  "compatibility_flags": ["nodejs_compat"],
 
   // npx wrangler kv namespace create COUNTER
   // -> prints the 32-char hex namespace id, which is what `id` wants
@@ -31,43 +27,7 @@
     },
   ],
 
-  // npx wrangler r2 bucket create roc-cloudflare-bucket
-  // -> R2 has no id; `bucket_name` is the real bucket name
-  "r2_buckets": [
-    {
-      "binding": "BUCKET",
-      "bucket_name": "roc-cloudflare-bucket",
-    },
-  ],
-
-  // npx wrangler d1 create roc-cloudflare-db
-  // -> prints the database UUID for `database_id`; `database_name` must match
-  //    the name passed to the create command
-  // "d1_databases": [
-  //   {
-  //     "binding": "DB",
-  //     "database_name": "roc-cloudflare-db",
-  //     "database_id": "REPLACE_ME_with_the_uuid_wrangler_d1_create_prints",
-  //   },
-  // ],
-
-  // npx wrangler queues create roc-cloudflare-jobs
-  // -> `queue` is the real queue name
-  "queues": {
-    "producers": [
-      {
-        "binding": "JOBS",
-        "queue": "roc-cloudflare-jobs",
-      },
-    ],
-  },
-
-  // Text bindings, readable from Roc with Env.get!("GREETING").
-  // Secrets are set with `wrangler secret put NAME` and read the same way.
-  "vars": {
-    "GREETING": "Hello from wrangler vars",
-  },
-
+  // Required by the platform: loads worker.wasm as a module.
   "rules": [
     {
       "type": "CompiledWasm",

@@ -13,7 +13,7 @@ main! = |_request| {
     read = Kv.get!("COUNTER", "hits")
 
     match read {
-        Err(KvErr(message)) => { status: 500, headers: [], body: "KV error: ${message}\n" }
+        Err(KvErr(message)) => Response.text(500, [], "KV error: ${message}\n")
         Err(KvNotFound) => bump!("0")
         Ok(value) => bump!(value)
     }
@@ -28,7 +28,7 @@ bump! = |previous| {
     next = U64.to_str(count + 1)
 
     match Kv.put!("COUNTER", "hits", next) {
-        Ok({}) => { status: 200, headers: [], body: "hits: ${next}\n" }
-        Err(KvErr(message)) => { status: 500, headers: [], body: "KV error: ${message}\n" }
+        Ok({}) => Response.text(200, [], "hits: ${next}\n")
+        Err(KvErr(message)) => Response.text(500, [], "KV error: ${message}\n")
     }
 }

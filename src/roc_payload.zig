@@ -6,6 +6,21 @@
 const std = @import("std");
 const abi = @import("roc_platform_abi.zig");
 
+/// The list type the glue generates for `List(U8)`.
+///
+/// `U8` is not refcounted, so this is `elements_refcounted = false` — the
+/// allocation header is one pointer wide rather than two, and getting it wrong
+/// corrupts the heap. Spelled once here so the hosts cannot disagree, and so
+/// regenerating `roc_platform_abi.zig` cannot silently change it underneath.
+pub const RocBytes = abi.RocListWith(u8, false);
+
+comptime {
+    // Guard the assumption above: if glue ever emits a different list type for
+    // Request.body, this fails the build instead of miscompiling the header.
+    const generated = @FieldType(abi.Request, "body");
+    if (generated != RocBytes) @compileError("List(U8) ABI changed: Request.body is no longer RocBytes");
+}
+
 /// Store `value` in `result.payload`, under union field `field` on 64-bit
 /// targets and by direct write on 32-bit ones.
 pub fn set(result: anytype, comptime field: []const u8, value: anytype) void {
@@ -36,6 +51,14 @@ pub fn ok(comptime Result: type, value: anytype) Result {
 /// `Ok(text)` for a success carrying a `Str`.
 pub fn okStr(comptime Result: type, text: []const u8, roc_host: *abi.RocHost) Result {
     return ok(Result, abi.RocStr.fromSlice(text, roc_host));
+}
+
+/// `Ok(bytes)` for a success carrying a `List(U8)`.
+///
+/// `U8` is not refcounted, so this is the `elements_refcounted = false` list
+/// the glue generates for `List(U8)` — not `RocList(u8)`.
+pub fn okBytes(comptime Result: type, bytes: []const u8, roc_host: *abi.RocHost) Result {
+    return ok(Result, RocBytes.fromSlice(bytes, roc_host));
 }
 
 /// `Err(message)` where the error is a single tag carrying a `Str`, which Roc
