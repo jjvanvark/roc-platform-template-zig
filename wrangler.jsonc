@@ -62,6 +62,12 @@
     ],
   },
 
+  // Text bindings, readable from Roc with Env.get!("GREETING").
+  // Secrets are set with `wrangler secret put NAME` and read the same way.
+  "vars": {
+    "GREETING": "Hello from wrangler vars",
+  },
+
   "rules": [
     {
       "type": "CompiledWasm",

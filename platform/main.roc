@@ -1,6 +1,6 @@
 platform ""
     requires {} { main! : Request => Response }
-    exposes [Request, Response, Header, Stdout, Stderr, Kv, R2, D1, Queue]
+    exposes [Request, Response, Header, Stdout, Stderr, Env, Kv, R2, D1, Queue]
     packages {}
     provides { "roc_main": main_for_host! }
     hosted {
@@ -14,6 +14,7 @@ platform ""
         "roc_d1_query": Host.d1_query!,
         "roc_d1_execute": Host.d1_execute!,
         "roc_queue_send": Host.queue_send!,
+        "roc_env_get": Host.env_get!,
     }
     targets: {
         inputs_dir: "targets/",
@@ -33,6 +34,7 @@ import Request exposing [Request]
 import Response exposing [Response]
 import Stdout
 import Stderr
+import Env
 import Kv
 import R2
 import D1

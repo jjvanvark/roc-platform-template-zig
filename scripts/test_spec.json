@@ -184,6 +184,36 @@
           ]
         }
       ]
+    },
+    {
+      "path": "examples/env.roc",
+      "cases": [
+        {
+          "name": "reads-a-set-variable",
+          "args": [
+            "https://example.com/"
+          ],
+          "env": {
+            "GREETING": "hello from the test runner"
+          },
+          "stdout_contains": [
+            "GREETING: hello from the test runner",
+            "DEFINITELY_NOT_SET: (absent, as expected)"
+          ]
+        },
+        {
+          "name": "falls-back-when-unset",
+          "args": [
+            "https://example.com/"
+          ],
+          "unset_env": [
+            "GREETING"
+          ],
+          "stdout_contains": [
+            "GREETING: (no GREETING set)"
+          ]
+        }
+      ]
     }
   ]
 }

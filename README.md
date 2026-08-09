@@ -41,6 +41,26 @@ Cloudflare lowercases incoming header names and joins repeated headers into one 
 
 `Stdout.line!` and `Stderr.line!` write to the Worker log, visible in `wrangler tail`.
 
+### Environment variables and secrets
+
+```roc
+import pf.Env
+
+Env.get!("GREETING")                      # Ok(value) | Err(EnvNotFound) | Err(EnvErr(msg))
+Env.get_or!("GREETING", "a default")      # Str
+```
+
+Variables come from `vars` in `wrangler.jsonc`; secrets are set with
+`wrangler secret put NAME` and read exactly the same way — Roc cannot tell them
+apart, which is the point.
+
+Asking for a binding that exists but is not text, such as a KV namespace, gives
+`EnvNotFound` rather than an error. Use `Kv`, `R2`, `D1` or `Queue` for those.
+
+Natively these read the real process environment, so `GREETING=hi ./app` works
+the same way. Windows is the exception: the native host reads `std.c.environ`,
+which msvcrt does not provide, so it reports `EnvErr` there.
+
 ### Workers KV
 
 ```roc
@@ -88,6 +108,7 @@ None of these exist outside Workers, so the native host approximates them well e
 
 | Binding | Native behaviour |
 |---------|------------------|
+| Env vars and secrets | The real process environment (not on Windows) |
 | KV, R2 | In-memory store scoped by binding name, for the lifetime of one process |
 | D1 | Reports that it is unavailable, rather than pretending |
 | Queues | Writes the message to stderr |
@@ -160,7 +181,7 @@ zig build docs
 
 ```
 $ zig build test
-All test stages passed (check: 9, build: 9, run: 13)
+All test stages passed (check: 10, build: 10, run: 15)
 ```
 
 Run the spec directly against another examples directory or only selected stages:

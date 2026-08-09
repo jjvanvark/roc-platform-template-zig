@@ -130,6 +130,30 @@ fn bindingErrorMessage(comptime kind: []const u8, err: anyerror, name: []const u
     };
 }
 
+/// Hosted function: Host.env_get!
+///
+/// Covers both `vars` and secrets: the runtime presents them identically, and
+/// the platform deliberately does not distinguish them either.
+fn hostedEnvGet(name: abi.RocStr) callconv(.c) abi.HostEnv_getResult {
+    const Result = abi.HostEnv_getResult;
+    const roc_host = initHost();
+    var owned_name = name;
+    defer owned_name.decref(roc_host);
+
+    const env = g_env orelse {
+        return payload.errUnionStr(Result, abi.EnvErrOrEnvNotFound, "env_err", .EnvErr, "Env is only available while handling a request", roc_host);
+    };
+
+    // workers-zig returns null both for an absent binding and for one that is
+    // not a string, e.g. a KV namespace. Roc sees EnvNotFound either way.
+    const value = env.get(owned_name.asSlice()) catch |e| {
+        return payload.errUnionStr(Result, abi.EnvErrOrEnvNotFound, "env_err", .EnvErr, @errorName(e), roc_host);
+    };
+
+    if (value) |v| return payload.okStr(Result, v, roc_host);
+    return payload.errUnionEmpty(Result, abi.EnvErrOrEnvNotFound, .EnvNotFound);
+}
+
 /// Hosted function: Host.kv_get!
 fn hostedKvGet(binding: abi.RocStr, key: abi.RocStr) callconv(.c) abi.HostKv_getResult {
     const Result = abi.HostKv_getResult;
@@ -437,6 +461,7 @@ comptime {
 
         @export(&hostedStderrLine, .{ .name = "roc_stderr_line", .visibility = .hidden });
         @export(&hostedStdoutLine, .{ .name = "roc_stdout_line", .visibility = .hidden });
+        @export(&hostedEnvGet, .{ .name = "roc_env_get", .visibility = .hidden });
         @export(&hostedKvGet, .{ .name = "roc_kv_get", .visibility = .hidden });
         @export(&hostedKvPut, .{ .name = "roc_kv_put", .visibility = .hidden });
         @export(&hostedR2Get, .{ .name = "roc_r2_get", .visibility = .hidden });

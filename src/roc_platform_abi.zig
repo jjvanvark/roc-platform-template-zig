@@ -1462,6 +1462,131 @@ comptime {
     }
 }
 
+/// Tag discriminant for Try.
+pub const HostEnv_getResultTag = enum(u8) {
+    Err = 0,
+    Ok = 1,
+};
+
+/// Payload union for Try.
+pub const HostEnv_getResultPayload = extern union {
+        err: EnvErrOrEnvNotFound,
+        ok: RocStr,
+};
+
+/// Tag union: Try
+pub const HostEnv_getResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [16]u8 align(4),
+    tag: HostEnv_getResultTag,
+    pub fn payload_err(self: *const @This()) EnvErrOrEnvNotFound {
+        const ptr: *const EnvErrOrEnvNotFound = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostEnv_getResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostEnv_getResult(self, amount);
+    }
+} else extern struct {
+    payload: HostEnv_getResultPayload,
+    tag: HostEnv_getResultTag,
+    pub fn payload_err(self: *const @This()) EnvErrOrEnvNotFound {
+        return self.payload.err;
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        return self.payload.ok;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostEnv_getResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostEnv_getResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostEnv_getResult) != 40) @compileError("HostEnv_getResult size mismatch");
+        if (@alignOf(HostEnv_getResult) != 8) @compileError("HostEnv_getResult alignment mismatch");
+        if (@offsetOf(HostEnv_getResult, "tag") != 32) @compileError("HostEnv_getResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostEnv_getResult) != 20) @compileError("HostEnv_getResult size mismatch");
+        if (@alignOf(HostEnv_getResult) != 4) @compileError("HostEnv_getResult alignment mismatch");
+        if (@offsetOf(HostEnv_getResult, "tag") != 16) @compileError("HostEnv_getResult tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for EnvErrOrEnvNotFound.
+pub const EnvErrOrEnvNotFoundTag = enum(u8) {
+    EnvErr = 0,
+    EnvNotFound = 1,
+};
+
+/// Payload union for EnvErrOrEnvNotFound.
+pub const EnvErrOrEnvNotFoundPayload = extern union {
+        env_err: RocStr,
+        env_not_found: [0]u8,
+};
+
+/// Tag union: EnvErrOrEnvNotFound
+pub const EnvErrOrEnvNotFound = if (@sizeOf(usize) == 4) extern struct {
+    payload: [12]u8 align(4),
+    tag: EnvErrOrEnvNotFoundTag,
+    pub fn payload_env_err(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefEnvErrOrEnvNotFound(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfEnvErrOrEnvNotFound(self, amount);
+    }
+} else extern struct {
+    payload: EnvErrOrEnvNotFoundPayload,
+    tag: EnvErrOrEnvNotFoundTag,
+    pub fn payload_env_err(self: *const @This()) RocStr {
+        return self.payload.env_err;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefEnvErrOrEnvNotFound(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfEnvErrOrEnvNotFound(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(EnvErrOrEnvNotFound) != 32) @compileError("EnvErrOrEnvNotFound size mismatch");
+        if (@alignOf(EnvErrOrEnvNotFound) != 8) @compileError("EnvErrOrEnvNotFound alignment mismatch");
+        if (@offsetOf(EnvErrOrEnvNotFound, "tag") != 24) @compileError("EnvErrOrEnvNotFound tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(EnvErrOrEnvNotFound) != 16) @compileError("EnvErrOrEnvNotFound size mismatch");
+        if (@alignOf(EnvErrOrEnvNotFound) != 4) @compileError("EnvErrOrEnvNotFound alignment mismatch");
+        if (@offsetOf(EnvErrOrEnvNotFound, "tag") != 12) @compileError("EnvErrOrEnvNotFound tag offset mismatch");
+    }
+}
+
 /// Arguments for Host.d1_execute!
 /// Roc signature: Str, Str, Str => Try(U64, [D1Err(Str)])
 /// Refcounted fields are owned by the hosted function.
@@ -1478,6 +1603,13 @@ pub const HostD1_queryArgs = extern struct {
     arg0: RocStr,
     arg1: RocStr,
     arg2: RocStr,
+};
+
+/// Arguments for Host.env_get!
+/// Roc signature: Str => Try(Str, [EnvErr(Str), EnvNotFound])
+/// Refcounted fields are owned by the hosted function.
+pub const HostEnv_getArgs = extern struct {
+    arg0: RocStr,
 };
 
 /// Arguments for Host.kv_get!
@@ -1546,6 +1678,9 @@ pub const HostStdout_lineArgs = extern struct {
 
 // Platform Type Aliases
 
+pub const HostEnv_getErr = EnvErrOrEnvNotFound;
+pub const HostEnv_getErrPayload = EnvErrOrEnvNotFoundPayload;
+pub const HostEnv_getErrTag = EnvErrOrEnvNotFoundTag;
 pub const HostKv_getErr = KvErrOrKvNotFound;
 pub const HostKv_getErrPayload = KvErrOrKvNotFoundPayload;
 pub const HostKv_getErrTag = KvErrOrKvNotFoundTag;
@@ -1770,6 +1905,46 @@ fn increfHostQueue_sendResult(value: HostQueue_sendResult, amount: isize) void {
     }
 }
 
+fn decrefHostEnv_getResult(value: HostEnv_getResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .Err => {
+        value.payload_err().decref(roc_host);
+        },
+        .Ok => {
+        value.payload_ok().decref(roc_host);
+        },
+    }
+}
+
+fn increfHostEnv_getResult(value: HostEnv_getResult, amount: isize) void {
+    switch (value.tag) {
+        .Err => {
+        value.payload_err().incref(amount);
+        },
+        .Ok => {
+        value.payload_ok().incref(amount);
+        },
+    }
+}
+
+fn decrefEnvErrOrEnvNotFound(value: EnvErrOrEnvNotFound, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .EnvErr => {
+        value.payload_env_err().decref(roc_host);
+        },
+        .EnvNotFound => {},
+    }
+}
+
+fn increfEnvErrOrEnvNotFound(value: EnvErrOrEnvNotFound, amount: isize) void {
+    switch (value.tag) {
+        .EnvErr => {
+        value.payload_env_err().incref(amount);
+        },
+        .EnvNotFound => {},
+    }
+}
+
 
 // Runtime Symbols
 //
@@ -1794,6 +1969,10 @@ pub extern fn roc_d1_execute(arg0: RocStr, arg1: RocStr, arg2: RocStr) callconv(
 /// Hosted symbol for Host.d1_query!
 /// Roc signature: Str, Str, Str => Try(Str, [D1Err(Str)])
 pub extern fn roc_d1_query(arg0: RocStr, arg1: RocStr, arg2: RocStr) callconv(.c) HostD1_queryResult;
+
+/// Hosted symbol for Host.env_get!
+/// Roc signature: Str => Try(Str, [EnvErr(Str), EnvNotFound])
+pub extern fn roc_env_get(arg0: RocStr) callconv(.c) HostEnv_getResult;
 
 /// Hosted symbol for Host.kv_get!
 /// Roc signature: Str, Str => Try(Str, [KvErr(Str), KvNotFound])

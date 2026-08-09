@@ -1,7 +1,7 @@
 ## Internal hosted-effect boundary used by the platform wrappers.
 ##
-## Applications should import `Stdout`, `Stderr`, `Kv`, `R2`, `D1` and `Queue`
-## instead.
+## Applications should import `Stdout`, `Stderr`, `Env`, `Kv`, `R2`, `D1` and
+## `Queue` instead.
 Host := [].{
 	stderr_line! : Str => Try({}, [StderrErr(Str)])
 	stdout_line! : Str => Try({}, [StdoutErr(Str)])
@@ -13,4 +13,5 @@ Host := [].{
 	d1_query! : Str, Str, Str => Try(Str, [D1Err(Str)])
 	d1_execute! : Str, Str, Str => Try(U64, [D1Err(Str)])
 	queue_send! : Str, Str => Try({}, [QueueErr(Str)])
+	env_get! : Str => Try(Str, [EnvNotFound, EnvErr(Str)])
 }

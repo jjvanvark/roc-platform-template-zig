@@ -159,6 +159,41 @@ fn storeDelete(comptime kind: []const u8, binding: []const u8, key: []const u8) 
     }
 }
 
+/// Look up a process environment variable.
+///
+/// The Workers analogue of a text binding is an environment variable, so the
+/// native host reads the real process environment rather than stubbing this
+/// out. `std.c.environ` is the portable-enough route: the native targets all
+/// link libc, and Windows msvcrt does not expose it under this name.
+fn processEnvGet(name: []const u8) ?[]const u8 {
+    if (builtin.os.tag == .windows) return null;
+
+    var i: usize = 0;
+    while (std.c.environ[i]) |entry| : (i += 1) {
+        const pair = std.mem.sliceTo(entry, 0);
+        const eq = std.mem.indexOfScalar(u8, pair, '=') orelse continue;
+        if (std.mem.eql(u8, pair[0..eq], name)) return pair[eq + 1 ..];
+    }
+    return null;
+}
+
+/// Hosted function: Host.env_get!
+fn hostedEnvGet(name: abi.RocStr) callconv(.c) abi.HostEnv_getResult {
+    const Result = abi.HostEnv_getResult;
+    const roc_host = g_roc_host.?;
+    var owned_name = name;
+    defer owned_name.decref(roc_host);
+
+    if (builtin.os.tag == .windows) {
+        return payload.errUnionStr(Result, abi.EnvErrOrEnvNotFound, "env_err", .EnvErr, "reading environment variables is not supported on Windows natively", roc_host);
+    }
+
+    if (processEnvGet(owned_name.asSlice())) |value| {
+        return payload.okStr(Result, value, roc_host);
+    }
+    return payload.errUnionEmpty(Result, abi.EnvErrOrEnvNotFound, .EnvNotFound);
+}
+
 /// Hosted function: Host.kv_get!
 fn hostedKvGet(binding: abi.RocStr, key: abi.RocStr) callconv(.c) abi.HostKv_getResult {
     const Result = abi.HostKv_getResult;
@@ -331,6 +366,7 @@ comptime {
     if (!builtin.is_test) {
         @export(&hostedStderrLine, .{ .name = "roc_stderr_line", .visibility = .hidden });
         @export(&hostedStdoutLine, .{ .name = "roc_stdout_line", .visibility = .hidden });
+        @export(&hostedEnvGet, .{ .name = "roc_env_get", .visibility = .hidden });
         @export(&hostedKvGet, .{ .name = "roc_kv_get", .visibility = .hidden });
         @export(&hostedKvPut, .{ .name = "roc_kv_put", .visibility = .hidden });
         @export(&hostedR2Get, .{ .name = "roc_r2_get", .visibility = .hidden });
