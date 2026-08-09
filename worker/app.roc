@@ -14,6 +14,6 @@ main! = |request| {
     {
         status: 200,
         headers: [{ name: "x-powered-by", value: "roc" }],
-        body: "Hello from Roc, running on Cloudflare Workers\nMethod: ${request.method}\nURL: ${request.url}\nHeaders:\n${Str.join_with(header_lines, "\n")}\n",
+        body: "Hello from Roc, running on Cloudflare Workers\nMethod: ${request.method}\nURL: ${request.url}\nHeaders:\n${Str.join_with(header_lines, "\n")}\nBody: ${request.body}\n",
     }
 }

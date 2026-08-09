@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "zig build wasm -Doptimize=ReleaseSmall && roc build --target=wasm32 --opt=size --wasm-memory=16777216 --output=worker/roc.wasm worker/app.roc",
+    "build": "zig build wasm -Doptimize=ReleaseSmall && zig build worker-tools && roc build --target=wasm32 --opt=size --wasm-memory=16777216 --output=worker/worker.wasm worker/app.roc && ./zig-out/bin/gen_entry worker/worker.wasm worker/entry.js",
     "dev": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy"
   },

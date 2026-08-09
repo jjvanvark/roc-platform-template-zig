@@ -5,7 +5,7 @@
 
 # Roc platform for Cloudflare Workers
 
-A [Roc platform](https://www.roc-lang.org/platforms) for [Cloudflare Workers](https://workers.cloudflare.com), with a [Zig](https://ziglang.org) host compiled to `wasm32`.
+A [Roc platform](https://www.roc-lang.org/platforms) for [Cloudflare Workers](https://workers.cloudflare.com), with a [Zig](https://ziglang.org) host compiled to `wasm32` on top of [workers-zig](https://github.com/nilslice/workers-zig).
 
 Forked from [roc-platform-template-zig](https://github.com/lukewilliamboswell/roc-platform-template-zig).
 
@@ -49,7 +49,16 @@ npm run dev      # build the wasm and serve it with wrangler
 npm run deploy   # build and publish
 ```
 
-The examples also build as native executables, which is the fastest way to iterate without wrangler in the loop. The native host synthesizes a request from the command line and prints the response body:
+`npm run build` runs four steps:
+
+1. `zig build wasm` compiles `src/host_wasm.zig` (plus workers-zig) to `platform/targets/wasm32/libhost.a`
+2. `zig build worker-tools` installs workers-zig's `gen_entry` and copies its `shim.js` into `worker/`
+3. `roc build --target=wasm32` links the host with the app into `worker/worker.wasm`
+4. `gen_entry` reads that wasm and writes `worker/entry.js`
+
+Step 3 is why workers-zig's own `addWorker()` is not used: it expects to produce the final wasm itself, and here Roc owns that link. `src/host_wasm.zig` therefore plays the role of the SDK's `src/entry.zig`, exporting `fetch` directly.
+
+The examples also build as native executables, which is the fastest way to iterate without wrangler in the loop. There is no standalone wasm harness: outside the shim, the exported `fetch` has nothing to resolve its handles against. The native host synthesizes a request from the command line and prints the response body:
 
 ```bash
 roc build examples/echo.roc --output=echo
@@ -155,4 +164,8 @@ This creates a `.tar.zst` bundle containing all `.roc` files and prebuilt host l
 
 Linux musl targets include statically linked C runtime files (`crt1.o`, `libc.a`) for standalone executables. The `v1` targets use each architecture's baseline instruction set for CPUs without the features required by the default targets.
 
-`wasm32` is the target Cloudflare Workers use, and is the only one built from `src/host_wasm.zig` rather than `src/host.zig`. Build it alone with `zig build wasm`.
+`wasm32` is the target Cloudflare Workers use, and is the only one built from `src/host_wasm.zig` rather than `src/host.zig`. Build it alone with `zig build wasm`. It targets `wasm32-wasi` rather than freestanding because that is what workers-zig expects; the shim implements `wasi_snapshot_preview1`. In practice the linked worker imports nothing from it — only the 14 `env` functions workers-zig uses.
+
+The Worker needs the `nodejs_compat` compatibility flag, because `shim.js` imports `node:fs`, `node:path` and `node:stream`.
+
+One consequence of the shim worth knowing: it instantiates the wasm module **once** and reuses that instance across requests, so Roc's allocator state persists between them. Roc is refcounted and frees as it goes, so this holds up — 1600 requests carrying 20KB bodies (32MB cumulative, well past the 16MB initial linear memory) all returned correctly with no degradation.

@@ -47,7 +47,9 @@ const RocTarget = enum {
                 .os_tag = .linux,
                 .abi = .musl,
             },
-            .wasm32 => .{ .cpu_arch = .wasm32, .os_tag = .freestanding },
+            // workers-zig targets wasi: the JS shim implements
+            // wasi_snapshot_preview1, which is how stdout/stderr and clocks work.
+            .wasm32 => .{ .cpu_arch = .wasm32, .os_tag = .wasi },
         };
     }
 
@@ -154,6 +156,27 @@ pub fn build(b: *std.Build) void {
         b.pathJoin(&.{ "platform", "targets", "wasm32", "libhost.a" }),
     );
     wasm_step.dependOn(&copy_wasm.step);
+
+    // Worker tooling step: installs workers-zig's `gen_entry` and its `shim.js`.
+    //
+    // `gen_entry` reads a finished .wasm and writes the entry.js that re-exports
+    // the handler plus any Durable Object / Workflow classes it finds in the
+    // export section. It runs after `roc build` has produced the wasm, so it
+    // cannot be wired into this graph directly — `npm run build` drives it.
+    const tools_step = b.step("worker-tools", "Install the workers-zig entry.js generator and shim");
+    const workers_dep = b.dependency("workers_zig", .{});
+    const gen_entry = b.addExecutable(.{
+        .name = "gen_entry",
+        .root_module = b.createModule(.{
+            .root_source_file = workers_dep.path("src/gen_entry.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    tools_step.dependOn(&b.addInstallArtifact(gen_entry, .{}).step);
+
+    const copy_shim = b.addUpdateSourceFiles();
+    copy_shim.addCopyFileToSource(workers_dep.path("js/shim.js"), "worker/shim.js");
+    tools_step.dependOn(&copy_shim.step);
 
     // Native step: build only for the current platform (with full cleanup first)
     const native_step = b.step("native", "Build host library for native platform only");
@@ -306,18 +329,25 @@ fn buildHostLib(
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Step.Compile {
     const is_wasm = roc_target == .wasm32;
+    const root_module = b.createModule(.{
+        .root_source_file = b.path(roc_target.rootSourceFile()),
+        .target = target,
+        .optimize = optimize,
+        .strip = optimize != .Debug,
+        // wasm has no position-dependent code to speak of, and requesting
+        // PIC for wasm32 is rejected by the compiler.
+        .pic = if (is_wasm) null else true,
+    });
+
+    if (is_wasm) {
+        const workers_dep = b.dependency("workers_zig", .{});
+        root_module.addImport("workers-zig", workers_dep.module("workers-zig"));
+    }
+
     const host_lib = b.addLibrary(.{
         .name = "host",
         .linkage = .static,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path(roc_target.rootSourceFile()),
-            .target = target,
-            .optimize = optimize,
-            .strip = optimize != .Debug,
-            // wasm has no position-dependent code to speak of, and requesting
-            // PIC for wasm32-freestanding is rejected by the compiler.
-            .pic = if (is_wasm) null else true,
-        }),
+        .root_module = root_module,
     });
     // Force bundle compiler-rt to resolve runtime symbols like __main
     host_lib.bundle_compiler_rt = true;

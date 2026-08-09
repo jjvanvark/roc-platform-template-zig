@@ -3,6 +3,9 @@
   "name": "roc-cloudflare",
   "main": "worker/entry.js",
   "compatibility_date": "2026-08-01",
+  // workers-zig's shim.js imports node:fs / node:path / node:stream for its
+  // WASI and socket support, so the runtime needs the Node compat layer.
+  "compatibility_flags": ["nodejs_compat"],
   "rules": [
     {
       "type": "CompiledWasm",

@@ -1,23 +1,22 @@
-///! Platform host for the wasm32 target.
+///! Platform host for the wasm32 target, backed by workers-zig.
 ///!
-///! Unlike `host.zig`, there is no POSIX stdio, no `main(argc, argv)` and no
-///! process to exit. Everything the host cannot do itself is delegated to the
-///! embedder through the `env` import namespace, and the Roc entrypoint is
-///! exposed as an exported wasm function the embedder calls directly.
+///! Unlike `host.zig` there is no `main(argc, argv)`: the JS shim calls the
+///! exported `fetch` below, handing over opaque handles that workers-zig wraps
+///! into `Request`/`Response` objects. This file's job is to translate between
+///! those and the Roc `Request`/`Response` the app sees.
+///!
+///! The corresponding role in a plain workers-zig project is played by the
+///! SDK's own `src/entry.zig`. We do not use it, because it is written to be
+///! the root of an executable that imports a user module, and here Roc owns the
+///! final link. Only the `fetch` handler is needed, so it is spelled out.
 const std = @import("std");
 const builtin = @import("builtin");
+const workers = @import("workers-zig");
 const abi = @import("roc_platform_abi.zig");
 
 pub const std_options: std.Options = .{
     .allow_stack_tracing = false,
 };
-
-// =============================================================================
-// Imports provided by the embedder (JavaScript)
-// =============================================================================
-
-/// Write a line to the embedder's log. `stream` is 1 for stdout, 2 for stderr.
-extern "env" fn host_log(stream: u32, ptr: [*]const u8, len: usize) void;
 
 // =============================================================================
 // Host environment
@@ -31,10 +30,10 @@ var g_host_env: HostEnv = undefined;
 var g_roc_host: ?*abi.RocHost = null;
 var g_roc_host_storage: abi.RocHost = undefined;
 
-/// `RocIo` backend that routes stderr through the embedder and traps on fatal
-/// errors (a wasm trap surfaces to the embedder as an exception).
+/// `RocIo` backend that routes stderr to the JS console and traps on fatal
+/// errors (a wasm trap surfaces to the shim as an exception).
 fn ioWriteStderr(_: ?*anyopaque, data: []const u8) void {
-    host_log(2, data.ptr, data.len);
+    workers.js.console_error(data.ptr, @intCast(data.len));
 }
 
 fn ioOnFatal(_: ?*anyopaque) noreturn {
@@ -51,7 +50,7 @@ fn initHost() *abi.RocHost {
 
     g_host_env = .{
         .roc_env = .{
-            .allocator = std.heap.wasm_allocator,
+            .allocator = workers.allocator,
             .roc_io = .{ .ctx = null, .vtable = &io_vtable },
         },
     };
@@ -64,21 +63,6 @@ fn initHost() *abi.RocHost {
 // Hosted functions
 // =============================================================================
 
-/// Store a `RocStr` in a `Try` payload.
-///
-/// On 32-bit targets the generated ABI represents the payload as a raw `[12]u8`
-/// rather than a union, because Zig cannot express the packing Roc uses there.
-/// `host.zig` never hits this branch, since every native target is 64-bit.
-fn setPayloadStr(result: anytype, str: abi.RocStr) void {
-    const Payload = @TypeOf(result.payload);
-    if (comptime @typeInfo(Payload) == .array) {
-        const ptr: *abi.RocStr = @ptrCast(@alignCast(&result.payload));
-        ptr.* = str;
-    } else {
-        result.payload = .{ .err = str };
-    }
-}
-
 /// Hosted function: Host.stdout_line!
 fn hostedStdoutLine(str: abi.RocStr) callconv(.c) abi.HostStdout_lineResult {
     const roc_host = initHost();
@@ -86,7 +70,7 @@ fn hostedStdoutLine(str: abi.RocStr) callconv(.c) abi.HostStdout_lineResult {
     defer owned.decref(roc_host);
 
     const message = owned.asSlice();
-    host_log(1, message.ptr, message.len);
+    workers.js.console_log(message.ptr, @intCast(message.len));
 
     var result = std.mem.zeroes(abi.HostStdout_lineResult);
     result.tag = .Ok;
@@ -100,7 +84,7 @@ fn hostedStderrLine(str: abi.RocStr) callconv(.c) abi.HostStderr_lineResult {
     defer owned.decref(roc_host);
 
     const message = owned.asSlice();
-    host_log(2, message.ptr, message.len);
+    workers.js.console_error(message.ptr, @intCast(message.len));
 
     var result = std.mem.zeroes(abi.HostStderr_lineResult);
     result.tag = .Ok;
@@ -139,187 +123,102 @@ fn hostCrashed(bytes: [*]const u8, len: usize) callconv(.c) void {
 extern fn roc_main(request: abi.Request) callconv(.c) abi.Response;
 
 // =============================================================================
-// Request/response marshalling
-//
-// The embedder cannot build Roc values itself, so the exchange is:
-//
-//   1. `roc_request_alloc_lens(3 + 2 * header_count)` -> u32 array to fill with
-//      the byte length of every segment
-//   2. `roc_request_alloc_data(total_len)` -> byte buffer to fill with the
-//      segments back to back, in the order
-//      method, url, body, name0, value0, name1, value1, ...
-//   3. `roc_handle(header_count)` runs the app
-//   4. `roc_response_*` read the result
-//   5. `roc_response_free()` releases everything
-//
-// Splitting lengths from bytes is what makes a variable number of headers work:
-// wasm function signatures are fixed, so the counts have to travel in memory.
-// Allocating both buffers rather than using fixed ones means no size cap.
+// fetch handler
 // =============================================================================
 
-/// Segments that are always present, before any headers: method, url, body.
-const fixed_segments = 3;
+/// Build the Roc `Request` the app sees from the workers-zig one.
+///
+/// Every string is copied into Roc-owned memory, because `roc_main` takes
+/// ownership of the whole Request while the workers-zig values live in a
+/// per-request arena this host frees on the way out.
+fn toRocRequest(request: *workers.Request, roc_host: *abi.RocHost) !abi.Request {
+    const url = try request.url();
+    const body = (try request.body()) orelse "";
+    const header_entries = try request.headers();
 
-var request_data: []u8 = &.{};
-var request_lens: []u32 = &.{};
-var response: ?abi.Response = null;
-
-/// Allocate the segment-length array. `count` must be `3 + 2 * header_count`.
-fn rocRequestAllocLens(count: usize) callconv(.c) ?[*]u32 {
-    _ = initHost();
-    freeRequestLens();
-    request_lens = std.heap.wasm_allocator.alloc(u32, count) catch {
-        request_lens = &.{};
-        return null;
-    };
-    return request_lens.ptr;
-}
-
-/// Allocate the buffer the segments are written into.
-fn rocRequestAllocData(total_len: usize) callconv(.c) ?[*]u8 {
-    _ = initHost();
-    freeRequestData();
-    request_data = std.heap.wasm_allocator.alloc(u8, total_len) catch {
-        request_data = &.{};
-        return null;
-    };
-    return request_data.ptr;
-}
-
-/// Take the next `seg_len` bytes of the request data buffer, advancing `offset`.
-fn takeSegment(offset: *usize, seg_len: u32) []const u8 {
-    const slice = request_data[offset.*..][0..seg_len];
-    offset.* += seg_len;
-    return slice;
-}
-
-/// Run the app against the marshalled request. Returns 0 on success, or -1 if
-/// the segment lengths do not describe exactly the data buffer that was
-/// allocated.
-fn rocHandle(header_count: usize) callconv(.c) i32 {
-    const roc_host = initHost();
-
-    if (request_lens.len != fixed_segments + 2 * header_count) return -1;
-
-    var total: usize = 0;
-    for (request_lens) |seg_len| total += seg_len;
-    if (total != request_data.len) return -1;
-
-    // Walks the data buffer in step with the length array.
-    var offset: usize = 0;
-
-    const method = takeSegment(&offset, request_lens[0]);
-    const url = takeSegment(&offset, request_lens[1]);
-    const body = takeSegment(&offset, request_lens[2]);
-
-    const headers = abi.RocList(abi.Header).allocate(header_count, roc_host);
-    if (header_count > 0) {
+    const headers = abi.RocList(abi.Header).allocate(header_entries.len, roc_host);
+    if (header_entries.len > 0) {
         const headers_ptr: [*]abi.Header = headers.elements_ptr.?;
-        for (0..header_count) |i| {
-            const name = takeSegment(&offset, request_lens[fixed_segments + 2 * i]);
-            const value = takeSegment(&offset, request_lens[fixed_segments + 2 * i + 1]);
+        for (header_entries, 0..) |entry, i| {
             headers_ptr[i] = .{
-                .name = abi.RocStr.fromSlice(name, roc_host),
-                .value = abi.RocStr.fromSlice(value, roc_host),
+                .name = abi.RocStr.fromSlice(entry.name, roc_host),
+                .value = abi.RocStr.fromSlice(entry.value, roc_host),
             };
         }
     }
 
-    // roc_main takes ownership of the Request, so none of this is decref'd here.
-    const request: abi.Request = .{
-        .method = abi.RocStr.fromSlice(method, roc_host),
+    return .{
+        .method = abi.RocStr.fromSlice(@tagName(request.method()), roc_host),
         .url = abi.RocStr.fromSlice(url, roc_host),
         .headers = headers,
         .body = abi.RocStr.fromSlice(body, roc_host),
     };
-
-    response = roc_main(request);
-    return 0;
 }
 
-fn rocResponseStatus() callconv(.c) u32 {
-    return if (response) |r| r.status else 0;
-}
+/// Turn the Roc `Response` into the workers-zig one the shim sends back.
+fn toWorkersResponse(roc_response: abi.Response) workers.Response {
+    var response = workers.Response.new();
 
-fn rocResponseBodyPtr() callconv(.c) [*]const u8 {
-    if (response) |*r| return r.body.asSlice().ptr;
-    return "";
-}
+    // Roc models the status as a plain U16, so an unrecognised code is passed
+    // through as whatever the app asked for.
+    response.setStatus(@enumFromInt(roc_response.status));
 
-fn rocResponseBodyLen() callconv(.c) usize {
-    if (response) |*r| return r.body.asSlice().len;
-    return 0;
-}
-
-fn rocResponseHeaderCount() callconv(.c) usize {
-    if (response) |*r| return r.headers.len();
-    return 0;
-}
-
-/// Return the name or value of response header `index`, or an empty slice when
-/// the index is out of range.
-fn responseHeaderField(index: usize, comptime field: []const u8) []const u8 {
-    const r = &(response orelse return "");
-    const items = r.headers.items();
-    if (index >= items.len) return "";
-    return @field(items[index], field).asSlice();
-}
-
-fn rocResponseHeaderNamePtr(index: usize) callconv(.c) [*]const u8 {
-    return responseHeaderField(index, "name").ptr;
-}
-
-fn rocResponseHeaderNameLen(index: usize) callconv(.c) usize {
-    return responseHeaderField(index, "name").len;
-}
-
-fn rocResponseHeaderValuePtr(index: usize) callconv(.c) [*]const u8 {
-    return responseHeaderField(index, "value").ptr;
-}
-
-fn rocResponseHeaderValueLen(index: usize) callconv(.c) usize {
-    return responseHeaderField(index, "value").len;
-}
-
-fn freeRequestData() void {
-    if (request_data.len > 0) {
-        std.heap.wasm_allocator.free(request_data);
-        request_data = &.{};
+    var saw_content_type = false;
+    for (roc_response.headers.items()) |header| {
+        const name = header.name.asSlice();
+        if (std.ascii.eqlIgnoreCase(name, "content-type")) saw_content_type = true;
+        response.setHeader(name, header.value.asSlice());
     }
+    if (!saw_content_type) {
+        response.setHeader("content-type", "text/plain; charset=utf-8");
+    }
+
+    response.setBody(roc_response.body.asSlice());
+    return response;
 }
 
-fn freeRequestLens() void {
-    if (request_lens.len > 0) {
-        std.heap.wasm_allocator.free(request_lens);
-        request_lens = &.{};
-    }
+/// Entry point the JS shim calls. The arguments are opaque indices into the
+/// shim's object table.
+fn fetchHandler(req_handle: u32, env_handle: u32, ctx_handle: u32) callconv(.c) u32 {
+    _ = ctx_handle;
+    _ = env_handle;
+
+    var arena = std.heap.ArenaAllocator.init(workers.allocator);
+    defer arena.deinit();
+
+    const roc_host = initHost();
+    var request = workers.Request.init(req_handle, arena.allocator());
+
+    // roc_main takes ownership of the Request, so it is not decref'd here.
+    const roc_request = toRocRequest(&request, roc_host) catch {
+        return workers.Response.err(.internal_server_error, "Could not read the request\n").handle;
+    };
+
+    const roc_response = roc_main(roc_request);
+    defer roc_response.decref(roc_host);
+
+    return toWorkersResponse(roc_response).handle;
 }
 
-/// Release the response and the request buffers, once the embedder has copied
-/// the response out.
-fn rocResponseFree() callconv(.c) void {
-    if (response) |r| {
-        r.decref(initHost());
-        response = null;
-    }
-    freeRequestData();
-    freeRequestLens();
+// =============================================================================
+// Memory exports the JS shim uses to write into linear memory.
+// =============================================================================
+
+fn wasmAlloc(len: u32) callconv(.c) ?[*]u8 {
+    const slice = workers.allocator.alloc(u8, len) catch return null;
+    return slice.ptr;
+}
+
+fn wasmDealloc(ptr: [*]u8, len: u32) callconv(.c) void {
+    workers.allocator.free(ptr[0..len]);
 }
 
 comptime {
     if (!builtin.is_test) {
-        @export(&rocRequestAllocLens, .{ .name = "roc_request_alloc_lens" });
-        @export(&rocRequestAllocData, .{ .name = "roc_request_alloc_data" });
-        @export(&rocHandle, .{ .name = "roc_handle" });
-        @export(&rocResponseStatus, .{ .name = "roc_response_status" });
-        @export(&rocResponseBodyPtr, .{ .name = "roc_response_body_ptr" });
-        @export(&rocResponseBodyLen, .{ .name = "roc_response_body_len" });
-        @export(&rocResponseHeaderCount, .{ .name = "roc_response_header_count" });
-        @export(&rocResponseHeaderNamePtr, .{ .name = "roc_response_header_name_ptr" });
-        @export(&rocResponseHeaderNameLen, .{ .name = "roc_response_header_name_len" });
-        @export(&rocResponseHeaderValuePtr, .{ .name = "roc_response_header_value_ptr" });
-        @export(&rocResponseHeaderValueLen, .{ .name = "roc_response_header_value_len" });
-        @export(&rocResponseFree, .{ .name = "roc_response_free" });
+        @export(&fetchHandler, .{ .name = "fetch" });
+        @export(&wasmAlloc, .{ .name = "wasm_alloc" });
+        @export(&wasmDealloc, .{ .name = "wasm_dealloc" });
+
         @export(&hostedStderrLine, .{ .name = "roc_stderr_line", .visibility = .hidden });
         @export(&hostedStdoutLine, .{ .name = "roc_stdout_line", .visibility = .hidden });
 
