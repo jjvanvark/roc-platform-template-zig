@@ -102,6 +102,30 @@ npm run dev      # build the wasm and serve it with wrangler
 npm run deploy   # build and publish
 ```
 
+### Bindings and deploying
+
+`wrangler dev` **simulates** every binding and accepts any id, so a config that
+works locally can still fail on deploy:
+
+```
+KV namespace 'roc_cloudflare_counter' is not valid. [code: 10042]
+```
+
+Before deploying, each binding in `wrangler.jsonc` has to name a resource that
+exists in your account. `binding` is the only field you choose freely — it is
+the string the Roc app passes, e.g. `Kv.get!("COUNTER", "hits")`.
+
+| Binding | Create it with | Goes in |
+|---------|----------------|---------|
+| KV | `wrangler kv namespace create COUNTER` | `id` — a 32-char hex id, not a name |
+| R2 | `wrangler r2 bucket create <name>` | `bucket_name` — no id involved |
+| D1 | `wrangler d1 create <name>` | `database_id` (UUID) and matching `database_name` |
+| Queues | `wrangler queues create <name>` | `queue` — the queue name |
+
+Each `create` command prints the snippet to paste back. Comment out any block
+you are not using: an unused binding still has to resolve on deploy. R2 and
+Queues need a paid Workers plan; KV and D1 work on the free tier.
+
 `npm run build` runs four steps:
 
 1. `zig build wasm` compiles `src/host_wasm.zig` (plus workers-zig) to `platform/targets/wasm32/libhost.a`
