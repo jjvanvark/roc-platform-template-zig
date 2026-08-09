@@ -11,5 +11,5 @@ main! = |request| {
     _ = Stdout.line!("handling ${request.method} ${request.url}")
     _ = Stderr.line!("this goes to the error log")
 
-    { status: 200, body: "Logged.\n" }
+    { status: 200, headers: [], body: "Logged.\n" }
 }

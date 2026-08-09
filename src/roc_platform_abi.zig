@@ -605,12 +605,22 @@ pub const RocEnv = struct {
 pub const Request = if (@sizeOf(usize) == 4) extern struct {
     @"method": RocStr,
     @"url": RocStr,
+    @"headers": RocList(Header),
     @"body": RocStr,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.@"method".decref(roc_host);
         value.@"url".decref(roc_host);
+        {
+            const list = value.@"headers";
+            if (list.hasOneRef()) {
+                for (list.allocationItems()) |item| {
+                        item.decref(roc_host);
+                }
+            }
+            list.decref(roc_host);
+        }
         value.@"body".decref(roc_host);
     }
 
@@ -619,17 +629,28 @@ pub const Request = if (@sizeOf(usize) == 4) extern struct {
         const value = self;
         value.@"method".incref(amount);
         value.@"url".incref(amount);
+        value.@"headers".incref(amount);
         value.@"body".incref(amount);
     }
 } else extern struct {
     @"method": RocStr,
     @"url": RocStr,
+    @"headers": RocList(Header),
     @"body": RocStr,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
         value.@"method".decref(roc_host);
         value.@"url".decref(roc_host);
+        {
+            const list = value.@"headers";
+            if (list.hasOneRef()) {
+                for (list.allocationItems()) |item| {
+                        item.decref(roc_host);
+                }
+            }
+            list.decref(roc_host);
+        }
         value.@"body".decref(roc_host);
     }
 
@@ -638,59 +659,128 @@ pub const Request = if (@sizeOf(usize) == 4) extern struct {
         const value = self;
         value.@"method".incref(amount);
         value.@"url".incref(amount);
+        value.@"headers".incref(amount);
         value.@"body".incref(amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(Request) != 72) @compileError("Request size mismatch");
+        if (@sizeOf(Request) != 96) @compileError("Request size mismatch");
         if (@alignOf(Request) != 8) @compileError("Request alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(Request) != 36) @compileError("Request size mismatch");
+        if (@sizeOf(Request) != 48) @compileError("Request size mismatch");
         if (@alignOf(Request) != 4) @compileError("Request alignment mismatch");
+    }
+}
+
+/// Element type for Header
+pub const Header = if (@sizeOf(usize) == 4) extern struct {
+    @"name": RocStr,
+    @"value": RocStr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"name".decref(roc_host);
+        value.@"value".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"name".incref(amount);
+        value.@"value".incref(amount);
+    }
+} else extern struct {
+    @"name": RocStr,
+    @"value": RocStr,
+    /// Recursively decrement Roc-owned fields.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        const value = self;
+        value.@"name".decref(roc_host);
+        value.@"value".decref(roc_host);
+    }
+
+    /// Increment Roc-owned fields.
+    pub fn incref(self: @This(), amount: isize) void {
+        const value = self;
+        value.@"name".incref(amount);
+        value.@"value".incref(amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(Header) != 48) @compileError("Header size mismatch");
+        if (@alignOf(Header) != 8) @compileError("Header alignment mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(Header) != 24) @compileError("Header size mismatch");
+        if (@alignOf(Header) != 4) @compileError("Header alignment mismatch");
     }
 }
 
 /// Element type for Response
 pub const Response = if (@sizeOf(usize) == 4) extern struct {
+    @"headers": RocList(Header),
     @"body": RocStr,
     @"status": u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
+        {
+            const list = value.@"headers";
+            if (list.hasOneRef()) {
+                for (list.allocationItems()) |item| {
+                        item.decref(roc_host);
+                }
+            }
+            list.decref(roc_host);
+        }
         value.@"body".decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
+        value.@"headers".incref(amount);
         value.@"body".incref(amount);
     }
 } else extern struct {
+    @"headers": RocList(Header),
     @"body": RocStr,
     @"status": u16,
     /// Recursively decrement Roc-owned fields.
     pub fn decref(self: @This(), roc_host: *RocHost) void {
         const value = self;
+        {
+            const list = value.@"headers";
+            if (list.hasOneRef()) {
+                for (list.allocationItems()) |item| {
+                        item.decref(roc_host);
+                }
+            }
+            list.decref(roc_host);
+        }
         value.@"body".decref(roc_host);
     }
 
     /// Increment Roc-owned fields.
     pub fn incref(self: @This(), amount: isize) void {
         const value = self;
+        value.@"headers".incref(amount);
         value.@"body".incref(amount);
     }
 };
 
 comptime {
     if (@sizeOf(usize) == 8) {
-        if (@sizeOf(Response) != 32) @compileError("Response size mismatch");
+        if (@sizeOf(Response) != 56) @compileError("Response size mismatch");
         if (@alignOf(Response) != 8) @compileError("Response alignment mismatch");
     }
     if (@sizeOf(usize) == 4) {
-        if (@sizeOf(Response) != 16) @compileError("Response size mismatch");
+        if (@sizeOf(Response) != 28) @compileError("Response size mismatch");
         if (@alignOf(Response) != 4) @compileError("Response alignment mismatch");
     }
 }
@@ -826,6 +916,11 @@ pub const HostStderr_lineArgs = extern struct {
 pub const HostStdout_lineArgs = extern struct {
     arg0: RocStr,
 };
+
+// Platform Type Aliases
+
+pub const RequestHeaders = Header;
+pub const ResponseHeaders = Header;
 
 // Generated Refcount Helpers
 

@@ -28,37 +28,68 @@ export default {
     const w = instance.exports;
     memory = w.memory;
 
-    const method = encoder.encode(request.method);
-    const url = encoder.encode(request.url);
-    const body = new Uint8Array(await request.arrayBuffer());
-
-    const total = method.length + url.length + body.length;
-    const ptr = w.roc_request_alloc(total);
-    if (ptr === 0) {
-      return new Response("Out of memory building the request\n", { status: 500 });
+    // Segments in the order the host expects: method, url, body, then each
+    // header's name and value.
+    const segments = [
+      encoder.encode(request.method),
+      encoder.encode(request.url),
+      new Uint8Array(await request.arrayBuffer()),
+    ];
+    let headerCount = 0;
+    for (const [name, value] of request.headers) {
+      segments.push(encoder.encode(name), encoder.encode(value));
+      headerCount += 1;
     }
 
-    // The pointer is only valid until the next allocation, and roc_request_alloc
-    // is the last one before roc_handle, so this view is safe to fill in place.
-    const buf = new Uint8Array(memory.buffer, ptr, total);
-    buf.set(method, 0);
-    buf.set(url, method.length);
-    buf.set(body, method.length + url.length);
+    const lensPtr = w.roc_request_alloc_lens(segments.length);
+    if (lensPtr === 0) {
+      return new Response("Out of memory building the request\n", { status: 500 });
+    }
+    const lens = new Uint32Array(memory.buffer, lensPtr, segments.length);
+    let total = 0;
+    segments.forEach((segment, i) => {
+      lens[i] = segment.length;
+      total += segment.length;
+    });
 
-    if (w.roc_handle(method.length, url.length, body.length) !== 0) {
+    const dataPtr = w.roc_request_alloc_data(total);
+    if (dataPtr === 0) {
+      return new Response("Out of memory building the request\n", { status: 500 });
+    }
+    const data = new Uint8Array(memory.buffer, dataPtr, total);
+    let offset = 0;
+    for (const segment of segments) {
+      data.set(segment, offset);
+      offset += segment.length;
+    }
+
+    if (w.roc_handle(headerCount) !== 0) {
       return new Response("Roc host rejected the request\n", { status: 500 });
     }
 
+    // Read everything out before freeing: the bytes live in Roc-owned memory.
     const status = w.roc_response_status();
-    const bodyPtr = w.roc_response_body_ptr();
-    const bodyLen = w.roc_response_body_len();
-    // Decode before freeing: the bytes live in Roc-owned memory.
-    const responseBody = decoder.decode(new Uint8Array(memory.buffer, bodyPtr, bodyLen));
+    const body = decoder.decode(
+      new Uint8Array(memory.buffer, w.roc_response_body_ptr(), w.roc_response_body_len()),
+    );
+
+    const headers = new Headers();
+    for (let i = 0; i < w.roc_response_header_count(); i += 1) {
+      headers.append(
+        decoder.decode(
+          new Uint8Array(memory.buffer, w.roc_response_header_name_ptr(i), w.roc_response_header_name_len(i)),
+        ),
+        decoder.decode(
+          new Uint8Array(memory.buffer, w.roc_response_header_value_ptr(i), w.roc_response_header_value_len(i)),
+        ),
+      );
+    }
+    if (!headers.has("content-type")) {
+      headers.set("content-type", "text/plain; charset=utf-8");
+    }
+
     w.roc_response_free();
 
-    return new Response(responseBody, {
-      status,
-      headers: { "content-type": "text/plain; charset=utf-8" },
-    });
+    return new Response(body, { status, headers });
   },
 };

@@ -143,47 +143,93 @@ extern fn roc_main(request: abi.Request) callconv(.c) abi.Response;
 //
 // The embedder cannot build Roc values itself, so the exchange is:
 //
-//   1. `roc_request_alloc(total_len)` -> pointer to write into
-//   2. embedder writes method, then url, then body, back to back
-//   3. `roc_handle(method_len, url_len, body_len)` runs the app
-//   4. `roc_response_status` / `_body_ptr` / `_body_len` read the result
-//   5. `roc_response_free()` releases both
+//   1. `roc_request_alloc_lens(3 + 2 * header_count)` -> u32 array to fill with
+//      the byte length of every segment
+//   2. `roc_request_alloc_data(total_len)` -> byte buffer to fill with the
+//      segments back to back, in the order
+//      method, url, body, name0, value0, name1, value1, ...
+//   3. `roc_handle(header_count)` runs the app
+//   4. `roc_response_*` read the result
+//   5. `roc_response_free()` releases everything
 //
-// A length-prefixed buffer avoids a fixed size cap on the request body, and
-// keeps the embedder from having to build Roc values itself.
+// Splitting lengths from bytes is what makes a variable number of headers work:
+// wasm function signatures are fixed, so the counts have to travel in memory.
+// Allocating both buffers rather than using fixed ones means no size cap.
 // =============================================================================
 
-var request_buf: []u8 = &.{};
+/// Segments that are always present, before any headers: method, url, body.
+const fixed_segments = 3;
+
+var request_data: []u8 = &.{};
+var request_lens: []u32 = &.{};
 var response: ?abi.Response = null;
 
-/// Allocate a buffer for the embedder to write the request parts into.
-/// Returns null if the allocation fails.
-fn rocRequestAlloc(total_len: usize) callconv(.c) ?[*]u8 {
+/// Allocate the segment-length array. `count` must be `3 + 2 * header_count`.
+fn rocRequestAllocLens(count: usize) callconv(.c) ?[*]u32 {
     _ = initHost();
-    if (request_buf.len > 0) std.heap.wasm_allocator.free(request_buf);
-    request_buf = std.heap.wasm_allocator.alloc(u8, total_len) catch {
-        request_buf = &.{};
+    freeRequestLens();
+    request_lens = std.heap.wasm_allocator.alloc(u32, count) catch {
+        request_lens = &.{};
         return null;
     };
-    return request_buf.ptr;
+    return request_lens.ptr;
 }
 
-/// Run the app against the request written into the buffer from
-/// `roc_request_alloc`. Returns 0 on success, or -1 if the lengths do not add
-/// up to the buffer that was allocated.
-fn rocHandle(method_len: usize, url_len: usize, body_len: usize) callconv(.c) i32 {
+/// Allocate the buffer the segments are written into.
+fn rocRequestAllocData(total_len: usize) callconv(.c) ?[*]u8 {
+    _ = initHost();
+    freeRequestData();
+    request_data = std.heap.wasm_allocator.alloc(u8, total_len) catch {
+        request_data = &.{};
+        return null;
+    };
+    return request_data.ptr;
+}
+
+/// Take the next `seg_len` bytes of the request data buffer, advancing `offset`.
+fn takeSegment(offset: *usize, seg_len: u32) []const u8 {
+    const slice = request_data[offset.*..][0..seg_len];
+    offset.* += seg_len;
+    return slice;
+}
+
+/// Run the app against the marshalled request. Returns 0 on success, or -1 if
+/// the segment lengths do not describe exactly the data buffer that was
+/// allocated.
+fn rocHandle(header_count: usize) callconv(.c) i32 {
     const roc_host = initHost();
 
-    if (method_len + url_len + body_len != request_buf.len) return -1;
+    if (request_lens.len != fixed_segments + 2 * header_count) return -1;
 
-    const method = request_buf[0..method_len];
-    const url = request_buf[method_len..][0..url_len];
-    const body = request_buf[method_len + url_len ..][0..body_len];
+    var total: usize = 0;
+    for (request_lens) |seg_len| total += seg_len;
+    if (total != request_data.len) return -1;
 
-    // roc_main takes ownership of the Request, so these are not decref'd here.
+    // Walks the data buffer in step with the length array.
+    var offset: usize = 0;
+
+    const method = takeSegment(&offset, request_lens[0]);
+    const url = takeSegment(&offset, request_lens[1]);
+    const body = takeSegment(&offset, request_lens[2]);
+
+    const headers = abi.RocList(abi.Header).allocate(header_count, roc_host);
+    if (header_count > 0) {
+        const headers_ptr: [*]abi.Header = headers.elements_ptr.?;
+        for (0..header_count) |i| {
+            const name = takeSegment(&offset, request_lens[fixed_segments + 2 * i]);
+            const value = takeSegment(&offset, request_lens[fixed_segments + 2 * i + 1]);
+            headers_ptr[i] = .{
+                .name = abi.RocStr.fromSlice(name, roc_host),
+                .value = abi.RocStr.fromSlice(value, roc_host),
+            };
+        }
+    }
+
+    // roc_main takes ownership of the Request, so none of this is decref'd here.
     const request: abi.Request = .{
         .method = abi.RocStr.fromSlice(method, roc_host),
         .url = abi.RocStr.fromSlice(url, roc_host),
+        .headers = headers,
         .body = abi.RocStr.fromSlice(body, roc_host),
     };
 
@@ -205,28 +251,75 @@ fn rocResponseBodyLen() callconv(.c) usize {
     return 0;
 }
 
-/// Release the response and the request buffer, once the embedder has copied
-/// the body out.
+fn rocResponseHeaderCount() callconv(.c) usize {
+    if (response) |*r| return r.headers.len();
+    return 0;
+}
+
+/// Return the name or value of response header `index`, or an empty slice when
+/// the index is out of range.
+fn responseHeaderField(index: usize, comptime field: []const u8) []const u8 {
+    const r = &(response orelse return "");
+    const items = r.headers.items();
+    if (index >= items.len) return "";
+    return @field(items[index], field).asSlice();
+}
+
+fn rocResponseHeaderNamePtr(index: usize) callconv(.c) [*]const u8 {
+    return responseHeaderField(index, "name").ptr;
+}
+
+fn rocResponseHeaderNameLen(index: usize) callconv(.c) usize {
+    return responseHeaderField(index, "name").len;
+}
+
+fn rocResponseHeaderValuePtr(index: usize) callconv(.c) [*]const u8 {
+    return responseHeaderField(index, "value").ptr;
+}
+
+fn rocResponseHeaderValueLen(index: usize) callconv(.c) usize {
+    return responseHeaderField(index, "value").len;
+}
+
+fn freeRequestData() void {
+    if (request_data.len > 0) {
+        std.heap.wasm_allocator.free(request_data);
+        request_data = &.{};
+    }
+}
+
+fn freeRequestLens() void {
+    if (request_lens.len > 0) {
+        std.heap.wasm_allocator.free(request_lens);
+        request_lens = &.{};
+    }
+}
+
+/// Release the response and the request buffers, once the embedder has copied
+/// the response out.
 fn rocResponseFree() callconv(.c) void {
     if (response) |r| {
         r.decref(initHost());
         response = null;
     }
-    if (request_buf.len > 0) {
-        std.heap.wasm_allocator.free(request_buf);
-        request_buf = &.{};
-    }
+    freeRequestData();
+    freeRequestLens();
 }
 
 comptime {
     if (!builtin.is_test) {
-        @export(&rocRequestAlloc, .{ .name = "roc_request_alloc" });
+        @export(&rocRequestAllocLens, .{ .name = "roc_request_alloc_lens" });
+        @export(&rocRequestAllocData, .{ .name = "roc_request_alloc_data" });
         @export(&rocHandle, .{ .name = "roc_handle" });
         @export(&rocResponseStatus, .{ .name = "roc_response_status" });
         @export(&rocResponseBodyPtr, .{ .name = "roc_response_body_ptr" });
         @export(&rocResponseBodyLen, .{ .name = "roc_response_body_len" });
+        @export(&rocResponseHeaderCount, .{ .name = "roc_response_header_count" });
+        @export(&rocResponseHeaderNamePtr, .{ .name = "roc_response_header_name_ptr" });
+        @export(&rocResponseHeaderNameLen, .{ .name = "roc_response_header_name_len" });
+        @export(&rocResponseHeaderValuePtr, .{ .name = "roc_response_header_value_ptr" });
+        @export(&rocResponseHeaderValueLen, .{ .name = "roc_response_header_value_len" });
         @export(&rocResponseFree, .{ .name = "roc_response_free" });
-
         @export(&hostedStderrLine, .{ .name = "roc_stderr_line", .visibility = .hidden });
         @export(&hostedStdoutLine, .{ .name = "roc_stdout_line", .visibility = .hidden });
 

@@ -144,10 +144,10 @@ comptime {
 /// Synthesizes a Request from the command line so the platform can be run
 /// locally:
 ///
-///     ./app [url] [method] [body]
+///     ./app [url] [method] [body] [name:value ...]
 ///
-/// The response body goes to stdout, and the exit code is 0 for a 2xx/3xx
-/// status and 1 otherwise.
+/// Response headers are printed as `name: value` lines followed by a blank
+/// line, then the body. The exit code is 0 for a status below 400, else 1.
 fn platform_main(argc: usize, argv: [*][*:0]u8) c_int {
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -168,10 +168,30 @@ fn platform_main(argc: usize, argv: [*][*:0]u8) c_int {
     const method = argAt(argc, argv, 2) orelse "GET";
     const body = argAt(argc, argv, 3) orelse "";
 
-    // roc_main takes ownership of the Request, so these are not decref'd here.
+    // Everything after the body is a `name:value` header.
+    const first_header = @min(argc, 4);
+    const header_count = argc - first_header;
+    const headers = abi.RocList(abi.Header).allocate(header_count, &roc_host);
+    if (header_count > 0) {
+        const headers_ptr: [*]abi.Header = headers.elements_ptr.?;
+        for (0..header_count) |i| {
+            const arg = argAt(argc, argv, first_header + i).?;
+            // A header with no colon is treated as a name with an empty value.
+            const split = std.mem.indexOfScalar(u8, arg, ':') orelse arg.len;
+            const name = arg[0..split];
+            const value = if (split < arg.len) arg[split + 1 ..] else "";
+            headers_ptr[i] = .{
+                .name = abi.RocStr.fromSlice(name, &roc_host),
+                .value = abi.RocStr.fromSlice(value, &roc_host),
+            };
+        }
+    }
+
+    // roc_main takes ownership of the Request, so none of this is decref'd here.
     const request: abi.Request = .{
         .method = abi.RocStr.fromSlice(method, &roc_host),
         .url = abi.RocStr.fromSlice(url, &roc_host),
+        .headers = headers,
         .body = abi.RocStr.fromSlice(body, &roc_host),
     };
 
@@ -179,6 +199,16 @@ fn platform_main(argc: usize, argv: [*][*:0]u8) c_int {
     const status = response.status;
 
     const stdout = std.Io.File.stdout();
+    const response_headers = response.headers.items();
+    for (response_headers) |header| {
+        stdout.writeStreamingAll(io, header.name.asSlice()) catch {};
+        stdout.writeStreamingAll(io, ": ") catch {};
+        stdout.writeStreamingAll(io, header.value.asSlice()) catch {};
+        stdout.writeStreamingAll(io, "\n") catch {};
+    }
+    if (response_headers.len > 0) {
+        stdout.writeStreamingAll(io, "\n") catch {};
+    }
     stdout.writeStreamingAll(io, response.body.asSlice()) catch {};
 
     // The host owns the returned Response.

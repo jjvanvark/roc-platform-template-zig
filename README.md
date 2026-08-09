@@ -27,11 +27,17 @@ import pf.Response exposing [Response]
 
 main! : Request => Response
 main! = |request| {
-    { status: 200, body: "Hello from ${request.url}\n" }
+    {
+        status: 200,
+        headers: [{ name: "content-type", value: "text/plain" }],
+        body: "Hello from ${request.url}\n",
+    }
 }
 ```
 
-`Request` carries `method`, `url` and `body`; `Response` carries `status` and `body`. Headers are not modelled yet.
+`Request` carries `method`, `url`, `headers` and `body`; `Response` carries `status`, `headers` and `body`. A `Header` is `{ name, value }`.
+
+Cloudflare lowercases incoming header names and joins repeated headers into one comma-separated value, so look them up in lower case. When a response sets no `content-type`, the embedder defaults it to `text/plain`.
 
 `Stdout.line!` and `Stderr.line!` write to the Worker log, visible in `wrangler tail`.
 
@@ -47,8 +53,10 @@ The examples also build as native executables, which is the fastest way to itera
 
 ```bash
 roc build examples/echo.roc --output=echo
-./echo https://example.com/submit POST 'a body'
+./echo https://example.com/submit POST 'a body' accept:application/json
 ```
+
+Arguments are `[url] [method] [body] [name:value ...]`. Response headers print as `name: value` lines followed by a blank line, then the body.
 
 ## Documentation
 
@@ -66,7 +74,7 @@ zig build docs
 
 ```
 $ zig build test
-All test stages passed (check: 4, build: 4, run: 6)
+All test stages passed (check: 5, build: 5, run: 8)
 ```
 
 Run the spec directly against another examples directory or only selected stages:

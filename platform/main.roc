@@ -1,6 +1,6 @@
 platform ""
     requires {} { main! : Request => Response }
-    exposes [Request, Response, Stdout, Stderr]
+    exposes [Request, Response, Header, Stdout, Stderr]
     packages {}
     provides { "roc_main": main_for_host! }
     hosted {
@@ -20,6 +20,7 @@ platform ""
         wasm32: { inputs: ["libhost.a", app] },
     }
 
+import Header exposing [Header]
 import Request exposing [Request]
 import Response exposing [Response]
 import Stdout

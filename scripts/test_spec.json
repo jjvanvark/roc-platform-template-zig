@@ -11,7 +11,9 @@
       "cases": [
         {
           "name": "happy",
-          "stdout_contains": ["Hello, World!"]
+          "stdout_contains": [
+            "Hello, World!"
+          ]
         }
       ]
     },
@@ -20,12 +22,23 @@
       "cases": [
         {
           "name": "defaults",
-          "stdout_contains": ["GET http://localhost/"]
+          "stdout_contains": [
+            "GET http://localhost/"
+          ]
         },
         {
-          "name": "method-url-and-body",
-          "args": ["https://example.com/submit", "POST", "a body"],
-          "stdout_contains": ["POST https://example.com/submit", "a body"]
+          "name": "method-url-body-and-headers",
+          "args": [
+            "https://example.com/submit",
+            "POST",
+            "a body",
+            "accept:application/json"
+          ],
+          "stdout_contains": [
+            "POST https://example.com/submit",
+            "accept: application/json",
+            "a body"
+          ]
         }
       ]
     },
@@ -34,9 +47,16 @@
       "cases": [
         {
           "name": "happy",
-          "args": ["https://example.com/log"],
-          "stdout_contains": ["handling GET https://example.com/log", "Logged."],
-          "stderr_contains": ["this goes to the error log"]
+          "args": [
+            "https://example.com/log"
+          ],
+          "stdout_contains": [
+            "handling GET https://example.com/log",
+            "Logged."
+          ],
+          "stderr_contains": [
+            "this goes to the error log"
+          ]
         }
       ]
     },
@@ -45,14 +65,49 @@
       "cases": [
         {
           "name": "known-route",
-          "args": ["https://example.com/health"],
-          "stdout_contains": ["ok"]
+          "args": [
+            "https://example.com/health"
+          ],
+          "stdout_contains": [
+            "ok"
+          ]
         },
         {
           "name": "unknown-route",
-          "args": ["https://example.com/nope"],
+          "args": [
+            "https://example.com/nope"
+          ],
           "exit_code": 1,
-          "stdout_contains": ["not found"]
+          "stdout_contains": [
+            "not found"
+          ]
+        }
+      ]
+    },
+    {
+      "path": "examples/headers.roc",
+      "cases": [
+        {
+          "name": "reads-request-header",
+          "args": [
+            "https://example.com/",
+            "GET",
+            "",
+            "accept:application/json"
+          ],
+          "stdout_contains": [
+            "accept: application/json",
+            "x-powered-by: roc"
+          ]
+        },
+        {
+          "name": "missing-request-header",
+          "args": [
+            "https://example.com/"
+          ],
+          "stdout_contains": [
+            "accept: (absent)"
+          ]
         }
       ]
     }

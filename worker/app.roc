@@ -9,8 +9,11 @@ main! : Request => Response
 main! = |request| {
     _ = Stdout.line!("${request.method} ${request.url}")
 
+    header_lines = request.headers.map(|h| "  ${h.name}: ${h.value}")
+
     {
         status: 200,
-        body: "Hello from Roc, running on Cloudflare Workers\nMethod: ${request.method}\nURL: ${request.url}\n",
+        headers: [{ name: "x-powered-by", value: "roc" }],
+        body: "Hello from Roc, running on Cloudflare Workers\nMethod: ${request.method}\nURL: ${request.url}\nHeaders:\n${Str.join_with(header_lines, "\n")}\n",
     }
 }

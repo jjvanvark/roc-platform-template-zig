@@ -5,5 +5,5 @@ import pf.Response exposing [Response]
 
 main! : Request => Response
 main! = |_request| {
-    { status: 200, body: "Hello, World!\n" }
+    { status: 200, headers: [], body: "Hello, World!\n" }
 }
