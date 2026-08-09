@@ -1,0 +1,20 @@
+{
+  "name": "roc-cloudflare",
+  "version": "0.1.0",
+  "description": "A Roc platform for Cloudflare Workers, with a Zig host compiled to wasm32.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "zig build wasm -Doptimize=ReleaseSmall && roc build --target=wasm32 --opt=size --wasm-memory=16777216 --output=worker/roc.wasm worker/app.roc",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jjvanvark/roc-platform-template-zig.git"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "wrangler": "^4.120.0"
+  }
+}

@@ -149,17 +149,40 @@ fn hostCrashed(bytes: [*]const u8, len: usize) callconv(.c) void {
 /// Roc entrypoint exported by the app under `provides { "roc_main": main_for_host! }`.
 extern fn roc_main(args: abi.RocList(abi.RocStr)) callconv(.c) i32;
 
+/// Scratch buffer the embedder writes the request URL into before calling
+/// `roc_entry`. A fixed buffer keeps the embedder from having to drive the Roc
+/// allocator; this goes away once Request/Response marshalling lands.
+var url_buf: [4096]u8 = undefined;
+
+/// Returns a pointer to `url_buf` so the embedder can write into it.
+fn rocUrlBuffer() callconv(.c) [*]u8 {
+    return &url_buf;
+}
+
+/// Size of `url_buf`, so the embedder can reject oversized URLs.
+fn rocUrlBufferLen() callconv(.c) usize {
+    return url_buf.len;
+}
+
 /// Entrypoint the embedder calls. Mirrors `platform_main` in `host.zig`, but
-/// takes no arguments and returns the app's exit code instead of exiting.
-fn rocEntry() callconv(.c) i32 {
+/// takes the request URL from `url_buf` instead of argv and returns the app's
+/// exit code instead of exiting.
+fn rocEntry(url_len: usize) callconv(.c) i32 {
     const roc_host = initHost();
-    _ = roc_host;
-    return roc_main(abi.RocList(abi.RocStr).empty());
+
+    const len = @min(url_len, url_buf.len);
+    const args = abi.RocList(abi.RocStr).allocate(1, roc_host);
+    const args_ptr: [*]abi.RocStr = args.elements_ptr.?;
+    args_ptr[0] = abi.RocStr.fromSlice(url_buf[0..len], roc_host);
+
+    return roc_main(args);
 }
 
 comptime {
     if (!builtin.is_test) {
         @export(&rocEntry, .{ .name = "roc_entry" });
+        @export(&rocUrlBuffer, .{ .name = "roc_url_buffer" });
+        @export(&rocUrlBufferLen, .{ .name = "roc_url_buffer_len" });
 
         @export(&hostedStderrLine, .{ .name = "roc_stderr_line", .visibility = .hidden });
         @export(&hostedStdinLine, .{ .name = "roc_stdin_line", .visibility = .hidden });

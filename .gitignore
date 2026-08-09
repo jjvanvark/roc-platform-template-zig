@@ -54,3 +54,8 @@ build-output/
 
 # local scratch builds (dev/*.roc and dev/*.mjs are checked in)
 dev/*.wasm
+
+# Cloudflare Worker build output and tooling
+worker/roc.wasm
+node_modules/
+.wrangler/
