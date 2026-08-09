@@ -73,6 +73,32 @@ roc glue <path-to-roc>/src/glue/src/ZigGlue.roc ./src/ ./platform/main.roc
 
 This updates `src/roc_platform_abi.zig` with the ABI types and dispatch table matching the platform's hosted functions.
 
+Check the glue spec out at the same commit as the compiler in `.roc-version`, since the generated ABI tracks the compiler:
+
+```bash
+git clone --filter=blob:none --no-checkout https://github.com/roc-lang/roc /tmp/rocsrc
+cd /tmp/rocsrc && git sparse-checkout set --cone src/glue && git checkout <commit-from-.roc-version>
+```
+
+### macOS: `roc glue` fails to link
+
+On macOS a distributed Roc nightly cannot link the glue plugin dylib, and fails with:
+
+```
+ld64.lld: error: library not found for -lSystem
+ld64.lld: error: undefined symbol: _memcpy
+```
+
+`roc build` is unaffected. The two code paths resolve the Darwin sysroot differently: `src/cli/linker.zig` calls `findDarwinSysroot()`, which finds the `darwin/` directory shipped next to the `roc` executable, while `src/llvm_compile/compile.zig` uses the compile-time `build_options.darwin_sysroot` — the path on the machine that built the binary, which on a nightly is the CI runner's checkout and does not exist locally.
+
+Until that is fixed upstream, recreate the baked path locally:
+
+```bash
+sudo ./scripts/fix-macos-glue-sysroot.sh
+```
+
+Reverse it with `sudo rm -rf /Users/runner`.
+
 ## Bundling
 
 ```bash

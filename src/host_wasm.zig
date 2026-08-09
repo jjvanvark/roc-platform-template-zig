@@ -80,7 +80,7 @@ fn setPayloadStr(result: anytype, str: abi.RocStr) void {
 }
 
 /// Hosted function: Host.stdout_line!
-fn hostedStdoutLine(str: abi.RocStr) callconv(.c) abi.TryType6 {
+fn hostedStdoutLine(str: abi.RocStr) callconv(.c) abi.HostStdout_lineResult {
     const roc_host = initHost();
     var owned = str;
     defer owned.decref(roc_host);
@@ -88,13 +88,13 @@ fn hostedStdoutLine(str: abi.RocStr) callconv(.c) abi.TryType6 {
     const message = owned.asSlice();
     host_log(1, message.ptr, message.len);
 
-    var result = std.mem.zeroes(abi.TryType6);
+    var result = std.mem.zeroes(abi.HostStdout_lineResult);
     result.tag = .Ok;
     return result;
 }
 
 /// Hosted function: Host.stderr_line!
-fn hostedStderrLine(str: abi.RocStr) callconv(.c) abi.TryType0 {
+fn hostedStderrLine(str: abi.RocStr) callconv(.c) abi.HostStderr_lineResult {
     const roc_host = initHost();
     var owned = str;
     defer owned.decref(roc_host);
@@ -102,7 +102,7 @@ fn hostedStderrLine(str: abi.RocStr) callconv(.c) abi.TryType0 {
     const message = owned.asSlice();
     host_log(2, message.ptr, message.len);
 
-    var result = std.mem.zeroes(abi.TryType0);
+    var result = std.mem.zeroes(abi.HostStderr_lineResult);
     result.tag = .Ok;
     return result;
 }
@@ -110,9 +110,9 @@ fn hostedStderrLine(str: abi.RocStr) callconv(.c) abi.TryType0 {
 /// Hosted function: Host.stdin_line!
 ///
 /// There is no stdin in a wasm embedding, so this always fails.
-fn hostedStdinLine() callconv(.c) abi.TryType4 {
+fn hostedStdinLine() callconv(.c) abi.HostStdin_lineResult {
     const roc_host = initHost();
-    var result = std.mem.zeroes(abi.TryType4);
+    var result = std.mem.zeroes(abi.HostStdin_lineResult);
     setPayloadStr(&result, abi.RocStr.fromSlice("stdin is not available on wasm32", roc_host));
     result.tag = .Err;
     return result;

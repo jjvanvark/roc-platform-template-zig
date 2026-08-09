@@ -6,10 +6,10 @@ import pf.Stdout
 ## is written to stdout becomes the response body.
 main! : List(Str) => Try({}, [Exit(I32), StdoutErr(Str), ..])
 main! = |args| {
-    url = Str.join_with(args, "")
+	url = Str.join_with(args, "")
 
-    Stdout.line!("Hello from Roc, running on Cloudflare Workers!")?
-    Stdout.line!("You requested: ${url}")?
+	Stdout.line!("Hello from Roc, running on Cloudflare Workers")?
+	Stdout.line!("You requested: ${url}")?
 
-    Ok({})
+	Ok({})
 }
