@@ -13,6 +13,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const workers = @import("workers-zig");
 const abi = @import("roc_platform_abi.zig");
+const payload = @import("roc_payload.zig");
 
 pub const std_options: std.Options = .{
     .allow_stack_tracing = false,
@@ -25,6 +26,10 @@ pub const std_options: std.Options = .{
 const HostEnv = struct {
     roc_env: abi.RocEnv,
 };
+
+/// The Env for the request currently being handled. Bindings only exist inside
+/// a request, so hosted functions that need one fail when this is null.
+var g_env: ?workers.Env = null;
 
 var g_host_env: HostEnv = undefined;
 var g_roc_host: ?*abi.RocHost = null;
@@ -87,6 +92,99 @@ fn hostedStderrLine(str: abi.RocStr) callconv(.c) abi.HostStderr_lineResult {
     workers.js.console_error(message.ptr, @intCast(message.len));
 
     var result = std.mem.zeroes(abi.HostStderr_lineResult);
+    result.tag = .Ok;
+    return result;
+}
+
+/// Format "no KV binding named 'X'" into a scratch buffer.
+///
+/// The message names the binding because getting it wrong is the most likely
+/// mistake, and the wrangler config is the only place it can be fixed.
+var binding_err_buf: [256]u8 = undefined;
+fn missingBindingMessage(name: []const u8) []const u8 {
+    return std.fmt.bufPrint(
+        &binding_err_buf,
+        "no KV binding named '{s}' — add it to kv_namespaces in your wrangler config",
+        .{name},
+    ) catch "no KV binding with that name in the wrangler config";
+}
+
+/// Look up a binding by name on the current request's Env.
+fn lookupBinding(comptime T: type, name: []const u8) !T {
+    const env = g_env orelse return error.NoRequestInFlight;
+    const handle = workers.js.env_get_binding(env.handle, name.ptr, @intCast(name.len));
+    if (handle == workers.js.null_handle) return error.BindingNotFound;
+    return T.init(handle, env.allocator);
+}
+
+fn kvGetErr(message: []const u8, roc_host: *abi.RocHost) abi.HostKv_getResult {
+    var err = std.mem.zeroes(abi.KvErrOrKvNotFound);
+    payload.set(&err, "kv_err", abi.RocStr.fromSlice(message, roc_host));
+    err.tag = .KvErr;
+
+    var result = std.mem.zeroes(abi.HostKv_getResult);
+    payload.set(&result, "err", err);
+    result.tag = .Err;
+    return result;
+}
+
+/// Hosted function: Host.kv_get!
+fn hostedKvGet(binding: abi.RocStr, key: abi.RocStr) callconv(.c) abi.HostKv_getResult {
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_key = key;
+    defer owned_binding.decref(roc_host);
+    defer owned_key.decref(roc_host);
+
+    const kv = lookupBinding(workers.KvNamespace, owned_binding.asSlice()) catch |e| switch (e) {
+        error.NoRequestInFlight => return kvGetErr("KV is only available while handling a request", roc_host),
+        error.BindingNotFound => return kvGetErr(missingBindingMessage(owned_binding.asSlice()), roc_host),
+    };
+
+    const value = kv.getText(owned_key.asSlice()) catch |e| {
+        return kvGetErr(@errorName(e), roc_host);
+    };
+
+    if (value) |v| {
+        var result = std.mem.zeroes(abi.HostKv_getResult);
+        payload.set(&result, "ok", abi.RocStr.fromSlice(v, roc_host));
+        result.tag = .Ok;
+        return result;
+    }
+
+    var not_found = std.mem.zeroes(abi.KvErrOrKvNotFound);
+    not_found.tag = .KvNotFound;
+    var result = std.mem.zeroes(abi.HostKv_getResult);
+    payload.set(&result, "err", not_found);
+    result.tag = .Err;
+    return result;
+}
+
+fn kvPutErr(message: []const u8, roc_host: *abi.RocHost) abi.HostKv_putResult {
+    var result = std.mem.zeroes(abi.HostKv_putResult);
+    payload.set(&result, "err", abi.RocStr.fromSlice(message, roc_host));
+    result.tag = .Err;
+    return result;
+}
+
+/// Hosted function: Host.kv_put!
+fn hostedKvPut(binding: abi.RocStr, key: abi.RocStr, value: abi.RocStr) callconv(.c) abi.HostKv_putResult {
+    const roc_host = initHost();
+    var owned_binding = binding;
+    var owned_key = key;
+    var owned_value = value;
+    defer owned_binding.decref(roc_host);
+    defer owned_key.decref(roc_host);
+    defer owned_value.decref(roc_host);
+
+    const kv = lookupBinding(workers.KvNamespace, owned_binding.asSlice()) catch |e| switch (e) {
+        error.NoRequestInFlight => return kvPutErr("KV is only available while handling a request", roc_host),
+        error.BindingNotFound => return kvPutErr(missingBindingMessage(owned_binding.asSlice()), roc_host),
+    };
+
+    kv.put(owned_key.asSlice(), owned_value.asSlice());
+
+    var result = std.mem.zeroes(abi.HostKv_putResult);
     result.tag = .Ok;
     return result;
 }
@@ -181,10 +279,13 @@ fn toWorkersResponse(roc_response: abi.Response) workers.Response {
 /// shim's object table.
 fn fetchHandler(req_handle: u32, env_handle: u32, ctx_handle: u32) callconv(.c) u32 {
     _ = ctx_handle;
-    _ = env_handle;
 
     var arena = std.heap.ArenaAllocator.init(workers.allocator);
     defer arena.deinit();
+
+    // Bindings are reachable from hosted functions for the duration of the call.
+    g_env = workers.Env.init(env_handle, arena.allocator());
+    defer g_env = null;
 
     const roc_host = initHost();
     var request = workers.Request.init(req_handle, arena.allocator());
@@ -221,6 +322,8 @@ comptime {
 
         @export(&hostedStderrLine, .{ .name = "roc_stderr_line", .visibility = .hidden });
         @export(&hostedStdoutLine, .{ .name = "roc_stdout_line", .visibility = .hidden });
+        @export(&hostedKvGet, .{ .name = "roc_kv_get", .visibility = .hidden });
+        @export(&hostedKvPut, .{ .name = "roc_kv_put", .visibility = .hidden });
 
         @export(&hostAlloc, .{ .name = "roc_alloc", .visibility = .hidden });
         @export(&hostDealloc, .{ .name = "roc_dealloc", .visibility = .hidden });

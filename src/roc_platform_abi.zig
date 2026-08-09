@@ -903,6 +903,207 @@ comptime {
     }
 }
 
+/// Tag discriminant for Try.
+pub const HostKv_getResultTag = enum(u8) {
+    Err = 0,
+    Ok = 1,
+};
+
+/// Payload union for Try.
+pub const HostKv_getResultPayload = extern union {
+        err: KvErrOrKvNotFound,
+        ok: RocStr,
+};
+
+/// Tag union: Try
+pub const HostKv_getResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [16]u8 align(4),
+    tag: HostKv_getResultTag,
+    pub fn payload_err(self: *const @This()) KvErrOrKvNotFound {
+        const ptr: *const KvErrOrKvNotFound = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostKv_getResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostKv_getResult(self, amount);
+    }
+} else extern struct {
+    payload: HostKv_getResultPayload,
+    tag: HostKv_getResultTag,
+    pub fn payload_err(self: *const @This()) KvErrOrKvNotFound {
+        return self.payload.err;
+    }
+    pub fn payload_ok(self: *const @This()) RocStr {
+        return self.payload.ok;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostKv_getResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostKv_getResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostKv_getResult) != 40) @compileError("HostKv_getResult size mismatch");
+        if (@alignOf(HostKv_getResult) != 8) @compileError("HostKv_getResult alignment mismatch");
+        if (@offsetOf(HostKv_getResult, "tag") != 32) @compileError("HostKv_getResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostKv_getResult) != 20) @compileError("HostKv_getResult size mismatch");
+        if (@alignOf(HostKv_getResult) != 4) @compileError("HostKv_getResult alignment mismatch");
+        if (@offsetOf(HostKv_getResult, "tag") != 16) @compileError("HostKv_getResult tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for KvErrOrKvNotFound.
+pub const KvErrOrKvNotFoundTag = enum(u8) {
+    KvErr = 0,
+    KvNotFound = 1,
+};
+
+/// Payload union for KvErrOrKvNotFound.
+pub const KvErrOrKvNotFoundPayload = extern union {
+        kv_err: RocStr,
+        kv_not_found: [0]u8,
+};
+
+/// Tag union: KvErrOrKvNotFound
+pub const KvErrOrKvNotFound = if (@sizeOf(usize) == 4) extern struct {
+    payload: [12]u8 align(4),
+    tag: KvErrOrKvNotFoundTag,
+    pub fn payload_kv_err(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefKvErrOrKvNotFound(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfKvErrOrKvNotFound(self, amount);
+    }
+} else extern struct {
+    payload: KvErrOrKvNotFoundPayload,
+    tag: KvErrOrKvNotFoundTag,
+    pub fn payload_kv_err(self: *const @This()) RocStr {
+        return self.payload.kv_err;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefKvErrOrKvNotFound(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfKvErrOrKvNotFound(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(KvErrOrKvNotFound) != 32) @compileError("KvErrOrKvNotFound size mismatch");
+        if (@alignOf(KvErrOrKvNotFound) != 8) @compileError("KvErrOrKvNotFound alignment mismatch");
+        if (@offsetOf(KvErrOrKvNotFound, "tag") != 24) @compileError("KvErrOrKvNotFound tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(KvErrOrKvNotFound) != 16) @compileError("KvErrOrKvNotFound size mismatch");
+        if (@alignOf(KvErrOrKvNotFound) != 4) @compileError("KvErrOrKvNotFound alignment mismatch");
+        if (@offsetOf(KvErrOrKvNotFound, "tag") != 12) @compileError("KvErrOrKvNotFound tag offset mismatch");
+    }
+}
+
+/// Tag discriminant for Try.
+pub const HostKv_putResultTag = enum(u8) {
+    Err = 0,
+    Ok = 1,
+};
+
+/// Payload union for Try.
+pub const HostKv_putResultPayload = extern union {
+        err: RocStr,
+        ok: [0]u8,
+};
+
+/// Tag union: Try
+pub const HostKv_putResult = if (@sizeOf(usize) == 4) extern struct {
+    payload: [12]u8 align(4),
+    tag: HostKv_putResultTag,
+    pub fn payload_err(self: *const @This()) RocStr {
+        const ptr: *const RocStr = @ptrCast(@alignCast(&self.payload));
+        return ptr.*;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostKv_putResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostKv_putResult(self, amount);
+    }
+} else extern struct {
+    payload: HostKv_putResultPayload,
+    tag: HostKv_putResultTag,
+    pub fn payload_err(self: *const @This()) RocStr {
+        return self.payload.err;
+    }
+    /// Recursively decrement Roc-owned payloads.
+    pub fn decref(self: @This(), roc_host: *RocHost) void {
+        decrefHostKv_putResult(self, roc_host);
+    }
+
+    /// Increment Roc-owned payloads.
+    pub fn incref(self: @This(), amount: isize) void {
+        increfHostKv_putResult(self, amount);
+    }
+};
+
+comptime {
+    if (@sizeOf(usize) == 8) {
+        if (@sizeOf(HostKv_putResult) != 32) @compileError("HostKv_putResult size mismatch");
+        if (@alignOf(HostKv_putResult) != 8) @compileError("HostKv_putResult alignment mismatch");
+        if (@offsetOf(HostKv_putResult, "tag") != 24) @compileError("HostKv_putResult tag offset mismatch");
+    }
+    if (@sizeOf(usize) == 4) {
+        if (@sizeOf(HostKv_putResult) != 16) @compileError("HostKv_putResult size mismatch");
+        if (@alignOf(HostKv_putResult) != 4) @compileError("HostKv_putResult alignment mismatch");
+        if (@offsetOf(HostKv_putResult, "tag") != 12) @compileError("HostKv_putResult tag offset mismatch");
+    }
+}
+
+/// Arguments for Host.kv_get!
+/// Roc signature: Str, Str => Try(Str, [KvErr(Str), KvNotFound])
+/// Refcounted fields are owned by the hosted function.
+pub const HostKv_getArgs = extern struct {
+    arg0: RocStr,
+    arg1: RocStr,
+};
+
+/// Arguments for Host.kv_put!
+/// Roc signature: Str, Str, Str => Try({}, [KvErr(Str)])
+/// Refcounted fields are owned by the hosted function.
+pub const HostKv_putArgs = extern struct {
+    arg0: RocStr,
+    arg1: RocStr,
+    arg2: RocStr,
+};
+
 /// Arguments for Host.stderr_line!
 /// Roc signature: Str => Try({}, [StderrErr(Str)])
 /// Refcounted fields are owned by the hosted function.
@@ -919,6 +1120,9 @@ pub const HostStdout_lineArgs = extern struct {
 
 // Platform Type Aliases
 
+pub const HostKv_getErr = KvErrOrKvNotFound;
+pub const HostKv_getErrPayload = KvErrOrKvNotFoundPayload;
+pub const HostKv_getErrTag = KvErrOrKvNotFoundTag;
 pub const RequestHeaders = Header;
 pub const ResponseHeaders = Header;
 
@@ -960,6 +1164,64 @@ fn increfHostStdout_lineResult(value: HostStdout_lineResult, amount: isize) void
     }
 }
 
+fn decrefHostKv_getResult(value: HostKv_getResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .Err => {
+        value.payload_err().decref(roc_host);
+        },
+        .Ok => {
+        value.payload_ok().decref(roc_host);
+        },
+    }
+}
+
+fn increfHostKv_getResult(value: HostKv_getResult, amount: isize) void {
+    switch (value.tag) {
+        .Err => {
+        value.payload_err().incref(amount);
+        },
+        .Ok => {
+        value.payload_ok().incref(amount);
+        },
+    }
+}
+
+fn decrefKvErrOrKvNotFound(value: KvErrOrKvNotFound, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .KvErr => {
+        value.payload_kv_err().decref(roc_host);
+        },
+        .KvNotFound => {},
+    }
+}
+
+fn increfKvErrOrKvNotFound(value: KvErrOrKvNotFound, amount: isize) void {
+    switch (value.tag) {
+        .KvErr => {
+        value.payload_kv_err().incref(amount);
+        },
+        .KvNotFound => {},
+    }
+}
+
+fn decrefHostKv_putResult(value: HostKv_putResult, roc_host: *RocHost) void {
+    switch (value.tag) {
+        .Err => {
+        value.payload_err().decref(roc_host);
+        },
+        .Ok => {},
+    }
+}
+
+fn increfHostKv_putResult(value: HostKv_putResult, amount: isize) void {
+    switch (value.tag) {
+        .Err => {
+        value.payload_err().incref(amount);
+        },
+        .Ok => {},
+    }
+}
+
 
 // Runtime Symbols
 //
@@ -976,6 +1238,14 @@ pub extern fn roc_crashed(bytes: [*]const u8, len: usize) callconv(.c) void;
 //
 // The platform host must export these symbols with the exact direct C ABI signatures.
 // Refcounted arguments are owned by the hosted function.
+
+/// Hosted symbol for Host.kv_get!
+/// Roc signature: Str, Str => Try(Str, [KvErr(Str), KvNotFound])
+pub extern fn roc_kv_get(arg0: RocStr, arg1: RocStr) callconv(.c) HostKv_getResult;
+
+/// Hosted symbol for Host.kv_put!
+/// Roc signature: Str, Str, Str => Try({}, [KvErr(Str)])
+pub extern fn roc_kv_put(arg0: RocStr, arg1: RocStr, arg2: RocStr) callconv(.c) HostKv_putResult;
 
 /// Hosted symbol for Host.stderr_line!
 /// Roc signature: Str => Try({}, [StderrErr(Str)])

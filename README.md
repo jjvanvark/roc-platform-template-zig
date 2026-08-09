@@ -41,6 +41,24 @@ Cloudflare lowercases incoming header names and joins repeated headers into one 
 
 `Stdout.line!` and `Stderr.line!` write to the Worker log, visible in `wrangler tail`.
 
+### Workers KV
+
+```roc
+import pf.Kv
+
+match Kv.get!("COUNTER", "hits") {
+    Ok(value) => ...
+    Err(KvNotFound) => ...
+    Err(KvErr(message)) => ...
+}
+```
+
+The first argument is the **binding name** from `kv_namespaces` in your wrangler config, not the namespace id. Getting it wrong surfaces as `KvErr` naming the binding.
+
+KV is eventually consistent: a read straight after a write can still return the old value. Don't reach for it where you need read-after-write.
+
+Natively there is no Workers KV, so the host keeps an in-memory store scoped by binding name that lives for one process. It exists so KV-using apps run under `zig build test`; durability and consistency behaviour have to be checked against the real thing.
+
 ## Running
 
 ```bash
@@ -83,7 +101,7 @@ zig build docs
 
 ```
 $ zig build test
-All test stages passed (check: 5, build: 5, run: 8)
+All test stages passed (check: 6, build: 6, run: 9)
 ```
 
 Run the spec directly against another examples directory or only selected stages:

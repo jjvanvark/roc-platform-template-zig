@@ -6,6 +6,13 @@
   // workers-zig's shim.js imports node:fs / node:path / node:stream for its
   // WASI and socket support, so the runtime needs the Node compat layer.
   "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    {
+      "binding": "COUNTER",
+      // Local `wrangler dev` simulates KV, so this id only matters on deploy.
+      "id": "roc_cloudflare_counter"
+    }
+  ],
   "rules": [
     {
       "type": "CompiledWasm",

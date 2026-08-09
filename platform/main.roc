@@ -1,11 +1,13 @@
 platform ""
     requires {} { main! : Request => Response }
-    exposes [Request, Response, Header, Stdout, Stderr]
+    exposes [Request, Response, Header, Stdout, Stderr, Kv]
     packages {}
     provides { "roc_main": main_for_host! }
     hosted {
         "roc_stderr_line": Host.stderr_line!,
         "roc_stdout_line": Host.stdout_line!,
+        "roc_kv_get": Host.kv_get!,
+        "roc_kv_put": Host.kv_put!,
     }
     targets: {
         inputs_dir: "targets/",
@@ -25,6 +27,7 @@ import Request exposing [Request]
 import Response exposing [Response]
 import Stdout
 import Stderr
+import Kv
 import Host
 
 main_for_host! : Request => Response

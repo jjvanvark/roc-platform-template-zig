@@ -1,19 +1,34 @@
 app [main!] { pf: platform "../platform/main.roc" }
 
-import pf.Stdout
+import pf.Kv
 import pf.Request exposing [Request]
 import pf.Response exposing [Response]
 
-## Responds to every request with a plain-text summary of it.
+## A hit counter kept in Workers KV.
+##
+## KV is eventually consistent, so a read straight after a write can still
+## return the old value. Don't use it where you need read-after-write.
 main! : Request => Response
-main! = |request| {
-    _ = Stdout.line!("${request.method} ${request.url}")
+main! = |_request| {
+    read = Kv.get!("COUNTER", "hits")
 
-    header_lines = request.headers.map(|h| "  ${h.name}: ${h.value}")
+    match read {
+        Err(KvErr(message)) => { status: 500, headers: [], body: "KV error: ${message}\n" }
+        Err(KvNotFound) => bump!("0")
+        Ok(value) => bump!(value)
+    }
+}
 
-    {
-        status: 200,
-        headers: [{ name: "x-powered-by", value: "roc" }],
-        body: "Hello from Roc, running on Cloudflare Workers\nMethod: ${request.method}\nURL: ${request.url}\nHeaders:\n${Str.join_with(header_lines, "\n")}\nBody: ${request.body}\n",
+bump! : Str => Response
+bump! = |previous| {
+    count = match U64.from_str(previous) {
+        Ok(n) => n
+        Err(_) => 0
+    }
+    next = U64.to_str(count + 1)
+
+    match Kv.put!("COUNTER", "hits", next) {
+        Ok({}) => { status: 200, headers: [], body: "hits: ${next}\n" }
+        Err(KvErr(message)) => { status: 500, headers: [], body: "KV error: ${message}\n" }
     }
 }

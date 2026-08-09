@@ -110,6 +110,20 @@
           ]
         }
       ]
+    },
+    {
+      "path": "examples/kv.roc",
+      "cases": [
+        {
+          "name": "first-hit-starts-the-counter",
+          "args": [
+            "https://example.com/"
+          ],
+          "stdout_contains": [
+            "hits: 1"
+          ]
+        }
+      ]
     }
   ]
 }
