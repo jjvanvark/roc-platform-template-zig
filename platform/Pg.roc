@@ -18,7 +18,7 @@ Pg := [].{
     ## ```roc
     ## Pg.query!("PG", "SELECT name FROM users WHERE age > $1::int", "[\"21\"]")
     ## ```
-    query! : Str, Str, Str => Try(Str, [PgErr(Str), ..])
+    query! : Str, Str, Str => Try(Str, [PgErr(Str)])
     query! = |binding, sql, params|
         match Host.pg_query!(binding, sql, params) {
             Ok(rows) => Ok(rows)
@@ -30,7 +30,7 @@ Pg := [].{
     ## ```roc
     ## Pg.execute!("PG", "INSERT INTO users (name) VALUES ($1)", "[\"alice\"]")
     ## ```
-    execute! : Str, Str, Str => Try(U64, [PgErr(Str), ..])
+    execute! : Str, Str, Str => Try(U64, [PgErr(Str)])
     execute! = |binding, sql, params|
         match Host.pg_execute!(binding, sql, params) {
             Ok(rows_written) => Ok(rows_written)

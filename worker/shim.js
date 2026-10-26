@@ -13,6 +13,7 @@ import wasm from "./worker.wasm";
 // pg_query/pg_execute imports below, resolved from the consuming project's
 // node_modules when wrangler bundles this shim.
 import postgres from "postgres";
+
 import { connect as _socketConnect } from "cloudflare:sockets";
 import { DurableObject as _DurableObjectBase, WorkflowEntrypoint as _WorkflowBase } from "cloudflare:workers";
 import * as _nodeFs from "node:fs";
@@ -20,6 +21,129 @@ import * as _nodePath from "node:path";
 import _nodeProcess from "node:process";
 import * as _nodeTls from "node:tls";
 import { Duplex as _NodeDuplex } from "node:stream";
+
+// postgres.js: one connection per call (Hyperdrive pools server-side), no
+// type fetching or prepared statements (both are round trips Hyperdrive's
+// pooler does not need), and a connect that gives up well inside the query
+// bound below. Default connect_timeout is 30 s.
+const PG_CONNECT_TIMEOUT_S = 10;
+const PG_OPTIONS = { max: 1, fetch_types: false, prepare: false, connect_timeout: PG_CONNECT_TIMEOUT_S };
+
+// One client per event, not per statement. A request makes as many
+// statements as Roc calls, and opening a connection to Hyperdrive for each
+// was where the rare drops happened: on the edge about one setup in 10,000
+// hung and was closed at ~5 s while Hyperdrive itself logged no failed query
+// (forms: docs/architecture/Edge Resilience — Plan.md, H0/H5). So a client
+// is kept for the event the consumer names as the current scope
+// (_setPgScope, set around each entry into the wasm -- the consumer's chain
+// lets one call in at a time) and reused by its later statements. Never
+// across events: a socket belongs to the request that opened it, and using
+// it from another is "Cannot perform I/O on behalf of a different request".
+// Unscoped calls (no scope set: a Durable Object, a Workflow) keep one
+// connection per statement. A kept client closes itself after
+// PG_IDLE_TIMEOUT_S idle; the runtime closes whatever is left when its
+// request ends, and the WeakMap lets the client go with its scope.
+const PG_IDLE_TIMEOUT_S = 2;
+let _pgScope = null;
+const _pgClients = new WeakMap();
+export function _setPgScope(scope) {
+  _pgScope = scope && typeof scope === "object" ? scope : null;
+}
+
+function pgClient(connectionString) {
+  const scope = _pgScope;
+  if (!scope) return { sql: postgres(connectionString, PG_OPTIONS), fresh: true, scope: null };
+  const held = _pgClients.get(scope);
+  if (held && held.url === connectionString) return { sql: held.sql, fresh: false, scope };
+  const sql = postgres(connectionString, { ...PG_OPTIONS, idle_timeout: PG_IDLE_TIMEOUT_S });
+  _pgClients.set(scope, { url: connectionString, sql });
+  return { sql, fresh: true, scope };
+}
+
+// After a statement: an unscoped client is ended, as before. A kept one
+// stays, unless the connection itself failed -- not an error Postgres
+// answered with (a constraint, a RAISE: the socket is fine), but a closed
+// socket, a timeout -- and then the next statement starts over on a new one.
+async function pgRelease(client, broken) {
+  if (client.scope && !broken) return;
+  if (client.scope && _pgClients.get(client.scope)?.sql === client.sql) _pgClients.delete(client.scope);
+  try { await client.sql.end({ timeout: client.scope ? 0 : 5 }); } catch {}
+}
+
+// One statement, on the event's client (pgClient). A failure that happened
+// before the statement could have left -- the connection never opened, or
+// Hyperdrive found no connection to give it -- is tried once more on a fresh
+// connection, whatever the statement: nothing reached Postgres. Any other
+// connection failure (closed mid-statement) is ambiguous for a write, so it
+// goes back to the caller, which names it UNAVAILABLE (forms: roc-chain.js;
+// Edge Resilience — Plan.md H1/H4).
+const NEVER_SENT = /Failed to acquire a connection|Server connection attempt failed/i;
+const neverSent = (e) => e?.code === "CONNECT_TIMEOUT" || e?.code === "ECONNREFUSED" || NEVER_SENT.test(String(e?.message ?? ""));
+
+async function pgStatement(connectionString, text, paramsText) {
+  const params = paramsText ? JSON.parse(paramsText) : [];
+  for (let attempt = 0; ; attempt += 1) {
+    const client = pgClient(connectionString);
+    const t0 = Date.now();
+    try {
+      const fault = pgFaultNow();
+      if (fault) throw fault;
+      const rows = await pgBounded(client.sql.unsafe(text, params));
+      pgNote(text, client, Date.now() - t0, null);
+      await pgRelease(client, false);
+      return rows;
+    } catch (e) {
+      const broken = e instanceof postgres.PostgresError ? null : String(e?.message ?? e);
+      const retry = broken !== null && attempt === 0 && neverSent(e);
+      pgNote(text, client, Date.now() - t0, broken === null ? null : retry ? `${broken} (retried)` : broken);
+      await pgRelease(client, broken !== null);
+      if (retry) continue;
+      throw e;
+    }
+  }
+}
+
+// Fault injection, for the consumer's tests only (forms: the dev-only
+// POST /rpc/dev-pg-fault, behind DEV_RESET): every `every`th statement fails
+// before it runs, as a connection closed mid-statement ("closed", ambiguous)
+// or one that never opened ("connect", retried above). Off unless set.
+let _pgFault = { every: 0, kind: "closed", n: 0 };
+export function _setPgFault(every, kind = "closed") {
+  _pgFault = { every: Math.max(0, Math.floor(Number(every) || 0)), kind: kind === "connect" ? "connect" : "closed", n: 0 };
+}
+function pgFaultNow() {
+  if (!_pgFault.every) return null;
+  _pgFault.n += 1;
+  if (_pgFault.n % _pgFault.every !== 0) return null;
+  return _pgFault.kind === "connect"
+    ? Object.assign(new Error("write CONNECT_TIMEOUT fault.hyperdrive.local:5432"), { code: "CONNECT_TIMEOUT" })
+    : Object.assign(new Error("write CONNECTION_CLOSED fault.hyperdrive.local:5432"), { code: "CONNECTION_CLOSED" });
+}
+
+// A statement slower than PG_SLOW_MS, or failing on its connection, logs one line: its name
+// (the /* module.handler */ the consumer prefixes), whether it opened its
+// connection (`fresh`) or reused one, and how long it took. A slow fresh
+// statement is a slow setup -- Hyperdrive answers the queries themselves in
+// milliseconds.
+const PG_SLOW_MS = 1000;
+function pgNote(sqlText, client, ms, error) {
+  if (!error && ms < PG_SLOW_MS) return;
+  const name = /^\s*\/\*\s*([^*]+?)\s*\*\//.exec(sqlText)?.[1] ?? "";
+  const line = JSON.stringify({ tag: "pg", name, fresh: client.fresh, scoped: Boolean(client.scope), ms, ...(error ? { error: String(error).slice(0, 200) } : {}) });
+  if (error) console.warn(line);
+  else console.log(line);
+}
+// The longest a single statement may run before the call answers with an
+// error instead. Generous for an OLTP query; far below anything a request
+// could wait out.
+const PG_QUERY_TIMEOUT_MS = 20_000;
+function pgBounded(query) {
+  let timer;
+  const expiry = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Postgres query exceeded ${PG_QUERY_TIMEOUT_MS}ms`)), PG_QUERY_TIMEOUT_MS);
+  });
+  return Promise.race([query, expiry]).finally(() => clearTimeout(timer));
+}
 
 // ---------------------------------------------------------------------------
 // Handle table
@@ -325,28 +449,25 @@ const env_imports = {
   // `error` is null on success rather than "": the Zig side reads it with
   // js_get_string_prop, which maps null to the null handle, and an empty
   // string would round-trip through a zero-length allocation instead.
+  // Bounded, so a call into the wasm can never block longer than
+  // PG_CONNECT_TIMEOUT_S + PG_QUERY_TIMEOUT_MS: the consumer's serialized
+  // bridge treats a call older than that as dead and reinstantiates the
+  // module under it (see _reinstantiate), which is only safe if the call
+  // truly cannot resume.
   pg_query: susp(async (hdH, sp, sl, pp, pl) => {
-    const sql = postgres(get(hdH).connectionString, { max: 1, fetch_types: false, prepare: false });
     try {
-      const params = pl > 0 ? JSON.parse(readStr(pp, pl)) : [];
-      const rows = await sql.unsafe(readStr(sp, sl), params);
+      const rows = await pgStatement(get(hdH).connectionString, readStr(sp, sl), pl > 0 ? readStr(pp, pl) : "");
       return store({ rows: JSON.stringify(rows), count: rows.count ?? rows.length ?? 0, error: null });
     } catch (e) {
       return store({ rows: "[]", count: 0, error: String(e?.message ?? e) || "Postgres query failed" });
-    } finally {
-      try { await sql.end({ timeout: 5 }); } catch {}
     }
   }),
   pg_execute: susp(async (hdH, sp, sl, pp, pl) => {
-    const sql = postgres(get(hdH).connectionString, { max: 1, fetch_types: false, prepare: false });
     try {
-      const params = pl > 0 ? JSON.parse(readStr(pp, pl)) : [];
-      const rows = await sql.unsafe(readStr(sp, sl), params);
+      const rows = await pgStatement(get(hdH).connectionString, readStr(sp, sl), pl > 0 ? readStr(pp, pl) : "");
       return store({ rows: "[]", count: rows.count ?? 0, error: null });
     } catch (e) {
       return store({ rows: "[]", count: 0, error: String(e?.message ?? e) || "Postgres statement failed" });
-    } finally {
-      try { await sql.end({ timeout: 5 }); } catch {}
     }
   }),
 
@@ -2534,12 +2655,37 @@ function dirEntFiletype(d) {
 // ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
+// One instantiation at a time: concurrent first callers (or callers racing a
+// _reinstantiate) share the in-flight promise instead of each building their
+// own instance.
+let _initPromise = null;
 async function init() {
   if (_inst) return;
-  _inst = await WebAssembly.instantiate(wasm, {
-    env: env_imports,
-    wasi_snapshot_preview1: wasi_imports,
-  });
+  if (!_initPromise) {
+    _initPromise = WebAssembly.instantiate(wasm, {
+      env: env_imports,
+      wasi_snapshot_preview1: wasi_imports,
+    }).then((inst) => { _inst = inst; }).finally(() => { _initPromise = null; });
+  }
+  await _initPromise;
+}
+
+// Platform addition (not upstream workers-zig): replace the wasm instance.
+// For the caller who serializes entry into the wasm and has concluded that
+// the call currently inside it will never return -- a JSPI-suspended call
+// whose request context the runtime tore down leaves its stack frozen in
+// linear memory and the per-call globals above in whatever state it left
+// them. Nothing can resume that call, so a fresh instance (fresh memory,
+// fresh Zig globals) is the only way to make the module usable again. The
+// handle table is kept: live handles (env, ctx, DO state) stay valid, and the
+// dead call's entries just leak. The frozen instance is unreachable except
+// through its suspended continuation and is collected with it.
+export async function _reinstantiate() {
+  _inst = null;
+  _asyncPending = [];
+  _streamResolve = null;
+  _wsResolve = null;
+  await init();
 }
 
 // ---------------------------------------------------------------------------

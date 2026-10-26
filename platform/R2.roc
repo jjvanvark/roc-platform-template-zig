@@ -9,7 +9,7 @@ import Host
 ## gzipped export. `get_text!` and `put_text!` cover the UTF-8 case.
 R2 := [].{
     ## Read the object stored at `key`.
-    get! : Str, Str => Try(List(U8), [R2NotFound, R2Err(Str), ..])
+    get! : Str, Str => Try(List(U8), [R2NotFound, R2Err(Str)])
     get! = |binding, key|
         match Host.r2_get!(binding, key) {
             Ok(body) => Ok(body)
@@ -18,7 +18,7 @@ R2 := [].{
         }
 
     ## Write `body` at `key`, replacing any existing object.
-    put! : Str, Str, List(U8) => Try({}, [R2Err(Str), ..])
+    put! : Str, Str, List(U8) => Try({}, [R2Err(Str)])
     put! = |binding, key, body|
         match Host.r2_put!(binding, key, body) {
             Ok({}) => Ok({})
@@ -30,7 +30,7 @@ R2 := [].{
     ## An object that is not valid UTF-8 comes back as `R2Err` rather than a
     ## separate tag, so the error union matches `get!`. Reach for `get!` when
     ## the object might not be text.
-    get_text! : Str, Str => Try(Str, [R2NotFound, R2Err(Str), ..])
+    get_text! : Str, Str => Try(Str, [R2NotFound, R2Err(Str)])
     get_text! = |binding, key|
         match Host.r2_get!(binding, key) {
             Ok(body) =>
@@ -44,7 +44,7 @@ R2 := [].{
         }
 
     ## Write `body` at `key` as UTF-8 text, replacing any existing object.
-    put_text! : Str, Str, Str => Try({}, [R2Err(Str), ..])
+    put_text! : Str, Str, Str => Try({}, [R2Err(Str)])
     put_text! = |binding, key, body|
         match Host.r2_put!(binding, key, Str.to_utf8(body)) {
             Ok({}) => Ok({})
@@ -52,7 +52,7 @@ R2 := [].{
         }
 
     ## Delete the object at `key`. Deleting an absent key succeeds.
-    delete! : Str, Str => Try({}, [R2Err(Str), ..])
+    delete! : Str, Str => Try({}, [R2Err(Str)])
     delete! = |binding, key|
         match Host.r2_delete!(binding, key) {
             Ok({}) => Ok({})

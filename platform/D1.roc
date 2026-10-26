@@ -12,7 +12,7 @@ D1 := [].{
     ## ```roc
     ## D1.query!("DB", "SELECT name FROM users WHERE age > ?", "[21]")
     ## ```
-    query! : Str, Str, Str => Try(Str, [D1Err(Str), ..])
+    query! : Str, Str, Str => Try(Str, [D1Err(Str)])
     query! = |binding, sql, params|
         match Host.d1_query!(binding, sql, params) {
             Ok(rows) => Ok(rows)
@@ -24,7 +24,7 @@ D1 := [].{
     ## ```roc
     ## D1.execute!("DB", "INSERT INTO users (name) VALUES (?)", "[\"alice\"]")
     ## ```
-    execute! : Str, Str, Str => Try(U64, [D1Err(Str), ..])
+    execute! : Str, Str, Str => Try(U64, [D1Err(Str)])
     execute! = |binding, sql, params|
         match Host.d1_execute!(binding, sql, params) {
             Ok(rows_written) => Ok(rows_written)

@@ -11,7 +11,7 @@ Env := [].{
     ## Returns `Err(EnvNotFound)` when there is no such binding, or when the
     ## binding exists but is not text — a KV namespace, say. Use `Kv`, `R2`,
     ## `D1` or `Queue` for those.
-    get! : Str => Try(Str, [EnvNotFound, EnvErr(Str), ..])
+    get! : Str => Try(Str, [EnvNotFound, EnvErr(Str)])
     get! = |name|
         match Host.env_get!(name) {
             Ok(value) => Ok(value)

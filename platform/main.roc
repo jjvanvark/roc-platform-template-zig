@@ -28,7 +28,7 @@ platform ""
         arm64v1musl: { inputs: ["crt1.o", "libhost.a", app, "libc.a"] },
         x64win: { inputs: ["host.lib", app] },
         arm64win: { inputs: ["host.lib", app] },
-        wasm32: { inputs: ["libhost.a", app] },
+        wasm32: { inputs: ["libhost.a", app], exports: ["fetch", "wasm_alloc", "wasm_dealloc"] },
     }
 
 import Header exposing [Header]

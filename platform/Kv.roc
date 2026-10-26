@@ -9,7 +9,7 @@ Kv := [].{
     ##
     ## Returns `Err(KvNotFound)` when the key is absent, and `Err(KvErr(message))`
     ## when the binding does not exist or the read fails.
-    get! : Str, Str => Try(Str, [KvNotFound, KvErr(Str), ..])
+    get! : Str, Str => Try(Str, [KvNotFound, KvErr(Str)])
     get! = |binding, key|
         match Host.kv_get!(binding, key) {
             Ok(value) => Ok(value)
@@ -21,7 +21,7 @@ Kv := [].{
     ##
     ## KV is eventually consistent: a read straight after a write can still see
     ## the old value.
-    put! : Str, Str, Str => Try({}, [KvErr(Str), ..])
+    put! : Str, Str, Str => Try({}, [KvErr(Str)])
     put! = |binding, key, value|
         match Host.kv_put!(binding, key, value) {
             Ok({}) => Ok({})
