@@ -86,9 +86,11 @@ async function pgStatement(connectionString, text, paramsText) {
     const client = pgClient(connectionString);
     const t0 = Date.now();
     try {
-      const fault = pgFaultNow();
-      if (fault) throw fault;
+      const fault = pgFaultNow(text);
+      if (fault && !fault.after) throw fault.error;
       const rows = await pgBounded(client.sql.unsafe(text, params));
+      // "after": the statement ran (and committed), its answer is lost.
+      if (fault) throw fault.error;
       pgNote(text, client, Date.now() - t0, null);
       await pgRelease(client, false);
       return rows;
@@ -105,19 +107,38 @@ async function pgStatement(connectionString, text, paramsText) {
 
 // Fault injection, for the consumer's tests only (forms: the dev-only
 // POST /rpc/dev-pg-fault, behind DEV_RESET): every `every`th statement fails
-// before it runs, as a connection closed mid-statement ("closed", ambiguous)
-// or one that never opened ("connect", retried above). Off unless set.
-let _pgFault = { every: 0, kind: "closed", n: 0 };
-export function _setPgFault(every, kind = "closed") {
-  _pgFault = { every: Math.max(0, Math.floor(Number(every) || 0)), kind: kind === "connect" ? "connect" : "closed", n: 0 };
+// as a connection closed mid-statement before it ran ("closed", ambiguous to
+// the caller), one that never opened ("connect", retried above), or one
+// closed after the statement ran and committed, its answer lost ("after":
+// the case an idempotent write has to survive -- forms: Mutation
+// Idempotency — Plan.md P6). `match`, when given, narrows it to statements
+// whose text contains it -- the consumer's `/* module.handler */` name -- so
+// a test can fail one write and nothing around it; `times`, when given,
+// stops it after that many faults (a drop strikes once, and a retry that
+// runs the statement again should not meet it a second time). Off unless set.
+const PG_FAULT_KINDS = ["closed", "connect", "after"];
+let _pgFault = { every: 0, kind: "closed", match: "", times: 0, n: 0, fired: 0 };
+export function _setPgFault(every, kind = "closed", match = "", times = 0) {
+  _pgFault = {
+    every: Math.max(0, Math.floor(Number(every) || 0)),
+    kind: PG_FAULT_KINDS.includes(kind) ? kind : "closed",
+    match: String(match ?? ""),
+    times: Math.max(0, Math.floor(Number(times) || 0)),
+    n: 0,
+    fired: 0,
+  };
 }
-function pgFaultNow() {
+function pgFaultNow(text) {
   if (!_pgFault.every) return null;
+  if (_pgFault.match && !text.includes(_pgFault.match)) return null;
+  if (_pgFault.times && _pgFault.fired >= _pgFault.times) return null;
   _pgFault.n += 1;
   if (_pgFault.n % _pgFault.every !== 0) return null;
-  return _pgFault.kind === "connect"
+  _pgFault.fired += 1;
+  const error = _pgFault.kind === "connect"
     ? Object.assign(new Error("write CONNECT_TIMEOUT fault.hyperdrive.local:5432"), { code: "CONNECT_TIMEOUT" })
     : Object.assign(new Error("write CONNECTION_CLOSED fault.hyperdrive.local:5432"), { code: "CONNECTION_CLOSED" });
+  return { error, after: _pgFault.kind === "after" };
 }
 
 // A statement slower than PG_SLOW_MS, or failing on its connection, logs one line: its name
