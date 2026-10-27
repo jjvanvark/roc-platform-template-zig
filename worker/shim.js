@@ -25,8 +25,13 @@ import { Duplex as _NodeDuplex } from "node:stream";
 // postgres.js: one connection per call (Hyperdrive pools server-side), no
 // type fetching or prepared statements (both are round trips Hyperdrive's
 // pooler does not need), and a connect that gives up well inside the query
-// bound below. Default connect_timeout is 30 s.
-const PG_CONNECT_TIMEOUT_S = 10;
+// bound below. Default connect_timeout is 30 s. 4 s, not 10 (forms: staging
+// run C4, 2026-10-27): a setup that has not finished in 4 s is one that
+// hangs -- healthy ones take tens of milliseconds, slow ones a second or
+// two -- and pgStatement tries a connection that never opened once more, so
+// a hung setup now costs 8 s before the caller hears, not 20, which is
+// inside a client's socket-upgrade wait.
+const PG_CONNECT_TIMEOUT_S = 4;
 const PG_OPTIONS = { max: 1, fetch_types: false, prepare: false, connect_timeout: PG_CONNECT_TIMEOUT_S };
 
 // One client per event, not per statement. A request makes as many
@@ -39,15 +44,29 @@ const PG_OPTIONS = { max: 1, fetch_types: false, prepare: false, connect_timeout
 // lets one call in at a time) and reused by its later statements. Never
 // across events: a socket belongs to the request that opened it, and using
 // it from another is "Cannot perform I/O on behalf of a different request".
-// Unscoped calls (no scope set: a Durable Object, a Workflow) keep one
-// connection per statement. A kept client closes itself after
-// PG_IDLE_TIMEOUT_S idle; the runtime closes whatever is left when its
-// request ends, and the WeakMap lets the client go with its scope.
+// Unscoped calls (no scope set) keep one connection per statement. A
+// consumer can scope a Durable Object's or a Workflow's event too, with a
+// token of its own per event, and end it when the event ends (_endPgScope):
+// those outlive no request of the runtime's, so nothing closes their client
+// for them. A kept client closes itself after PG_IDLE_TIMEOUT_S idle; the
+// runtime closes whatever is left when its request ends, and the WeakMap
+// lets the client go with its scope.
 const PG_IDLE_TIMEOUT_S = 2;
 let _pgScope = null;
 const _pgClients = new WeakMap();
 export function _setPgScope(scope) {
   _pgScope = scope && typeof scope === "object" ? scope : null;
+}
+
+// The end of a scope the consumer opened for an event of its own (a Durable
+// Object's request or alarm, a Workflow's run): its kept client is closed,
+// letting a statement still running finish first. A scope that kept no
+// client is nothing to close.
+export function _endPgScope(scope) {
+  const held = scope && typeof scope === "object" ? _pgClients.get(scope) : null;
+  if (!held) return;
+  _pgClients.delete(scope);
+  held.sql.end({ timeout: 2 }).catch(() => {});
 }
 
 function pgClient(connectionString) {
